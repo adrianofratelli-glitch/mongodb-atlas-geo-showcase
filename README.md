@@ -93,3 +93,7 @@ Planted impossible-travel pairs derive the interval from a target speed (1,100â€
 `MutationGuardMiddleware` blocks mutations from outside loopback unless `DEMO_ADMIN_TOKEN` matches through `hmac.compare_digest`; `ApiHardeningMiddleware` applies a body-size ceiling and `nosniff`/`DENY`/`no-referrer`/`no-store` headers. This PoV exposes no destructive endpoints (no index creation/deletion, no `collMod`); both modules are read-only over `geo.transacoes`.
 
 Never point this at anything other than a disposable demo cluster, and keep credentials out of version control (`backend/.env` is in `.gitignore`).
+
+## License
+
+MIT, see [LICENSE](LICENSE).
