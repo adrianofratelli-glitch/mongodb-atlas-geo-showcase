@@ -87,7 +87,7 @@ export default function App() {
         <div className="app-header-brand" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <MongoDBLogo size={26} />
           <div style={{ borderLeft: '1px solid rgba(255,255,255,.12)', paddingLeft: 12 }}>
-            <div style={{ color: '#fafafa', fontWeight: 700, fontSize: 14.5, lineHeight: 1.15, letterSpacing: '-.01em' }}>MongoDB Atlas</div>
+            <div style={{ color: '#fdfff5', fontWeight: 700, fontSize: 14.5, lineHeight: 1.15, letterSpacing: '-.01em' }}>MongoDB Atlas</div>
             <div style={{
               color: 'var(--accent)', fontSize: 10, marginTop: 1,
               fontFamily: 'var(--font-mono)', fontWeight: 600,

@@ -308,12 +308,12 @@ function carregarSdk() {
 const ESTILO_ESCURO = [
   { elementType: 'geometry', stylers: [{ color: '#0b2a33' }] },
   { elementType: 'labels.text.fill', stylers: [{ color: '#7b95a0' }] },
-  { elementType: 'labels.text.stroke', stylers: [{ color: '#001E2B' }] },
+  { elementType: 'labels.text.stroke', stylers: [{ color: '#061621' }] },
   { featureType: 'administrative', elementType: 'geometry.stroke', stylers: [{ color: '#12603f' }] },
   { featureType: 'poi', stylers: [{ visibility: 'off' }] },
   { featureType: 'road', stylers: [{ visibility: 'off' }] },
   { featureType: 'transit', stylers: [{ visibility: 'off' }] },
-  { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#001E2B' }] },
+  { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#061621' }] },
 ]
 
 function MapaGoogle({ pontos, linha, onErro }) {
@@ -328,7 +328,7 @@ function MapaGoogle({ pontos, linha, onErro }) {
       mapa.current = mapa.current || new maps.Map(div.current, {
         center: { lat: -15, lng: -54 }, zoom: 3.6, styles: ESTILO_ESCURO,
         disableDefaultUI: true, zoomControl: true, gestureHandling: 'cooperative',
-        backgroundColor: '#001E2B',
+        backgroundColor: '#061621',
       })
       desenhado.current.forEach(o => o.setMap(null))
       desenhado.current = []

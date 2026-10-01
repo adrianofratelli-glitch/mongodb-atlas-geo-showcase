@@ -289,7 +289,7 @@ export default function Geo() {
             <div className="col" style={{ minWidth: 260 }}>
               <MiniMapa
                 pontos={viagemSel ? [
-                  { coord: viagemSel.de.coordinates, rotulo: `origem — ${viagemSel.de.municipio}`, cor: '#06b6d4', destaque: true },
+                  { coord: viagemSel.de.coordinates, rotulo: `origem — ${viagemSel.de.municipio}`, cor: '#00c2eb', destaque: true },
                   { coord: viagemSel.para.coordinates, rotulo: `destino — ${viagemSel.para.municipio}`, cor: '#ff6960', destaque: true },
                 ] : []}
                 linha={viagemSel ? { de: viagemSel.de.coordinates, para: viagemSel.para.coordinates } : null}
