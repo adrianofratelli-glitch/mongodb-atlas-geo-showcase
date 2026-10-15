@@ -5,7 +5,7 @@ An interactive PoV that proves real geospatial behavior in MongoDB Atlas against
 1. **Retrospective investigation** (`impossible-travel`): pairs of card-present purchases by the same customer that are too far apart for the time between them. `$setWindowFields` partitions by customer, `$shift` brings in the previous purchase, and the distance comes from a haversine computed in plain MQL operators, inside the cluster.
 2. **Geospatial query operators** (`operadores`): MongoDB's five geospatial operators/stages side by side over the same geometry: `$geoWithin`, `$geoIntersects`, `$near`, `$nearSphere`, and `$geoNear`.
 
-This repository was extracted from the geo module (08) of [`mongodb-atlas-feature-showcase`](https://github.com/adrianofratelli-glitch/mongodb-atlas-feature-showcase) as a standalone PoV. React 18 + Vite frontend, FastAPI + PyMongo backend, MongoDB Atlas as the data layer. No LLM.
+This repository was extracted from the geo module (08) of [`mongodb-atlas-feature-showcase`](https://github.com/adrianofratelli-glitch/mongodb-atlas-feature-showcase) as a standalone PoV. React 19 + Vite frontend, FastAPI + PyMongo backend, MongoDB Atlas as the data layer. No LLM.
 
 UI text, docstrings, and error messages are in Brazilian Portuguese by design (Brazilian audience); this README and the code structure are in English.
 
@@ -36,7 +36,7 @@ cd backend
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements-dev.txt
 cp .env.example .env   # fill in MONGO_URI
-uvicorn main:app --reload --port 8010
+uvicorn main:app --reload --port 8184
 
 # Dataset (repo root, backend venv active)
 python scripts/seed_geo.py            # 150k geo-referenced transactions in geo.transacoes
@@ -48,7 +48,7 @@ python scripts/seed_geo.py --ensure   # idempotent path
 cd frontend
 npm install
 cp .env.example .env
-npm run dev            # :5184, proxy /api -> :8010
+npm run dev            # :5184, proxy /api -> :8184
 ```
 
 Tests and lint (repo root):
@@ -59,7 +59,7 @@ ruff check backend
 cd frontend && node --test tests/*.test.mjs
 ```
 
-Before any demo: `curl http://localhost:8010/preflight`.
+Before any demo: `curl http://localhost:8184/preflight`.
 
 ## Environment
 

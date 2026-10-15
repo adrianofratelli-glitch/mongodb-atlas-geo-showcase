@@ -34,7 +34,7 @@ class Settings:
     demo_admin_token: str = os.getenv("DEMO_ADMIN_TOKEN", "").strip()
     allowed_origins: tuple[str, ...] = _csv_env(
         "ALLOWED_ORIGINS",
-        "http://localhost:5174,http://127.0.0.1:5174",
+        "http://localhost:5184,http://127.0.0.1:5184",
     )
     max_request_bytes: int = _int_env("MAX_REQUEST_BYTES", 1_048_576, 1, 104_857_600)
 

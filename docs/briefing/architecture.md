@@ -28,10 +28,10 @@ existe na API mas está fora do fluxo padrão da tela:
 ## Stack
 
 ```
-React 18 + Vite (frontend/, :5184) --fetch--> FastAPI (backend/main.py, :8010) --> PyMongo --> MongoDB Atlas
+React 19 + Vite (frontend/, :5184) --fetch--> FastAPI (backend/main.py, :8184) --> PyMongo --> MongoDB Atlas
 ```
 
-- **Frontend**: React 18, Vite, sem biblioteca de mapa externa (sem
+- **Frontend**: React 19, Vite, sem biblioteca de mapa externa (sem
   Leaflet/Mapbox/tiles — ver seção "Mapa" abaixo). Fetch puro via hooks
   próprios.
 - **Backend**: FastAPI + PyMongo, um único `MongoClient` compartilhado
@@ -174,6 +174,6 @@ ruff check backend
 cd frontend && node --test tests/*.test.mjs
 ```
 
-Antes de qualquer demo: `curl http://localhost:8010/preflight` — valida
+Antes de qualquer demo: `curl http://localhost:8184/preflight` — valida
 `MONGO_URI`, conectividade, dataset carregado e (opcionalmente, sem
 reprovar) disponibilidade do Atlas Search index.
