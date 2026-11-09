@@ -1,5 +1,7 @@
 # MongoDB Atlas geo showcase
 
+Mapa do código: [docs/MAPA_DO_CODIGO.md](docs/MAPA_DO_CODIGO.md)
+
 An interactive PoV that proves real geospatial behavior in MongoDB Atlas against a real cluster, with no fraud-detection storytelling and no map for its own sake. Two panels:
 
 1. **Retrospective investigation** (`impossible-travel`): pairs of card-present purchases by the same customer that are too far apart for the time between them. `$setWindowFields` partitions by customer, `$shift` brings in the previous purchase, and the distance comes from a haversine computed in plain MQL operators, inside the cluster.
