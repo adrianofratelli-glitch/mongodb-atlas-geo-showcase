@@ -1,5 +1,7 @@
 # Queries, pipelines e índices — MongoDB Atlas Geo Showcase
 
+> Números de linha podem ficar defasados após mudanças: a fonte atualizada é [MAPA_DO_CODIGO.md](../MAPA_DO_CODIGO.md).
+
 Mapa completo de "onde está a query X" para responder rápido ao gestor.
 Tudo abaixo foi extraído do código real (`backend/routers/geo.py`,
 `scripts/seed_geo.py`, `scripts/create_search_index_geo.sh`). Nenhum exemplo
@@ -18,7 +20,7 @@ nome explícito (a lista completa que `/geo/status` também expõe):
 | Nome | Campos | Tipo | Por que existe |
 |---|---|---|---|
 | `e2e_unq_idx` | `endToEndId` asc | único | Idempotência do seed — reexecutar não duplica transação. |
-| `cliente_status_local_idx` | `clienteId` asc, `status` asc, `local` **2dsphere** | composto (Demo A) | Compara plano de execução com `local_2dsphere_idx` sob o mesmo filtro de `$geoWithin`. Igualdade primeiro, geo por último — o campo geo **não** precisa ser prefixo do índice para `$geoWithin`/`$geoIntersects` (nota didática do código, `geo.py:305-314`). |
+| `cliente_status_local_idx` | `clienteId` asc, `status` asc, `local` **2dsphere** | composto (Demo A) | Compara plano de execução com `local_2dsphere_idx` sob o mesmo filtro de `$geoWithin`. Igualdade primeiro, geo por último — o campo geo **não** precisa ser prefixo do índice para `$geoWithin`/`$geoIntersects` (nota didática do código, `geo.py:307-314`). |
 | `local_2dsphere_idx` | `local` **2dsphere** | geo puro (Demo A) | Outro lado do comparativo de explain — mede se o índice composto ou o puro examina menos chaves para o mesmo filtro. |
 | `cliente_ts_idx` | `clienteId` asc, `ts` asc | composto | Sustenta o `$setWindowFields` particionado por cliente e ordenado por `ts` no painel de investigação (Demo B). |
 | `uf_ts_idx` | `uf` asc, `ts` desc | composto | Suporte a consultas por UF/tempo (não exercitado diretamente pelos endpoints atuais, mas mantido como índice de suporte geral). |

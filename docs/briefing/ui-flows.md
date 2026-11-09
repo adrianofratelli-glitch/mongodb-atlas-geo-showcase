@@ -1,5 +1,7 @@
 # UI — telas e fluxos
 
+> Números de linha podem ficar defasados após mudanças: a fonte atualizada é [MAPA_DO_CODIGO.md](../MAPA_DO_CODIGO.md).
+
 Sem screenshots no repositório (não há `*.png`/`*.jpg` versionados). Este
 documento mapeia telas, componentes e fluxo de interação a partir do código
 em `frontend/src/`.
@@ -125,10 +127,10 @@ usa a coleção espelho. Ver comentário em `Limites.jsx` sobre por que a regra
 
 ## Painel de busca (Atlas Search) — não exposto na UI
 
-`POST /geo/search` e `GET /geo/explain-compare` estão implementados e
+`POST /geo/search` e `POST /geo/explain-compare` estão implementados e
 testados no backend, mas **não há tela para eles** neste frontend — ficam
 disponíveis só via API para quem quiser explorar `$search` + facetas ou o
 comparativo de planos de execução manualmente (ex.: via curl/Postman ou
-Swagger em `/docs`, se habilitado). Se o gestor perguntar "onde está a tela
+Swagger em `/docs`, se habilitado). O endpoint herdado `GET /geo/sinais-ao-vivo` (lê `geo.sinais_ao_vivo`, populada por um processor externo) também não é chamado por nenhuma tela. Se o gestor perguntar "onde está a tela
 de busca", a resposta é: não existe, é intencional (README, seção "Armadilhas
 técnicas").
