@@ -1,4 +1,4 @@
 -r requirements.txt
 httpx==0.28.1
 pytest>=9.1.1,<10
-ruff==0.12.12
+ruff==0.17.4
