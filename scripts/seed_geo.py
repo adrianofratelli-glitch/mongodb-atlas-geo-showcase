@@ -10,7 +10,10 @@ O script é idempotente: o gerador usa uma semente fixa, então o `endToEndId` d
 cada documento é sempre o mesmo, e o índice único bloqueia a reinserção. Rodar
 duas vezes mantém o mesmo total.
 
-    python scripts/seed_geo.py            # cria (ou completa) o dataset
+Escrita só em banco `*_test`; no banco da demo, prefixe `ALLOW_DEMO_DB_WRITE=1`
+(`--check` é read-only e dispensa).
+
+    ALLOW_DEMO_DB_WRITE=1 python scripts/seed_geo.py   # cria (ou completa) o dataset da demo
     python scripts/seed_geo.py --drop     # recria do zero
     python scripts/seed_geo.py --ensure   # só recria se versão/volume estiverem divergentes
     python scripts/seed_geo.py --clientes 500 --por-cliente 20   # dataset menor
@@ -378,6 +381,19 @@ def dataset_atual(colecao, alvo: int) -> tuple[bool, str]:
     return True, f"{total} documentos na versão {VERSAO_DATASET}"
 
 
+def assert_writable_db(nome_banco: str) -> None:
+    """Escrita só em banco `*_test`, salvo `ALLOW_DEMO_DB_WRITE=1` (regra do portfólio).
+
+    O banco da demo (`geo`) é recriado de propósito com
+    `ALLOW_DEMO_DB_WRITE=1 python scripts/seed_geo.py ...`; `--check` é read-only e não passa aqui.
+    """
+    if nome_banco.endswith("_test") or os.getenv("ALLOW_DEMO_DB_WRITE") == "1":
+        return
+    raise RuntimeError(
+        f"'{nome_banco}' não é um banco *_test. Defina ALLOW_DEMO_DB_WRITE=1 para gravar nele de propósito."
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Seed do módulo Geo")
     modo = parser.add_mutually_exclusive_group()
@@ -410,7 +426,14 @@ def main() -> int:
         return 1
 
     cliente = MongoClient(uri, appname="showcase-seed-geo", serverSelectionTimeoutMS=15_000)
-    banco = cliente[os.getenv("GEO_DB", "geo").strip() or "geo"]
+    nome_banco = os.getenv("GEO_DB", "geo").strip() or "geo"
+    if not args.check:
+        try:
+            assert_writable_db(nome_banco)
+        except RuntimeError as erro:
+            print(f"erro: {erro}", file=sys.stderr)
+            return 2
+    banco = cliente[nome_banco]
     colecao = banco["transacoes"]
 
     alvo = args.clientes * args.por_cliente

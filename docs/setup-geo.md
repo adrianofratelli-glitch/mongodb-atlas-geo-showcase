@@ -9,6 +9,7 @@ O módulo roda contra o próprio banco (`geo`, sobrescreva com `GEO_DB`), então
 nunca precisa de nenhuma outra coleção.
 
 ```bash
+export ALLOW_DEMO_DB_WRITE=1          # escrita só em banco *_test sem esta variável (geo é o banco da demo)
 python scripts/seed_geo.py            # 2.000 clientes × 75 transações = 150 mil docs
 python scripts/seed_geo.py --drop     # recria do zero
 python scripts/seed_geo.py --ensure   # mantém se estiver atual; recria se estiver defasado/incompleto

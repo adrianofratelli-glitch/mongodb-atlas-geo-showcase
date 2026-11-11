@@ -563,3 +563,18 @@ def test_rotas_acompanham_centro_mas_nao_escalam_com_raio(monkeypatch, centro):
     assert menor['pipeline'][0]['$documents'] == menor['rotas']
     for resultado in maior['resultados']:
         assert resultado['query']['local'][resultado['operador']]['$geometry'] == maior['poligono']
+
+
+def test_seed_recusa_banco_da_demo_sem_flag(monkeypatch):
+    seed = _carregar_seed()
+    monkeypatch.delenv("ALLOW_DEMO_DB_WRITE", raising=False)
+    with pytest.raises(RuntimeError, match="ALLOW_DEMO_DB_WRITE"):
+        seed.assert_writable_db("geo")
+
+
+def test_seed_aceita_banco_test_e_flag_explicita(monkeypatch):
+    seed = _carregar_seed()
+    monkeypatch.delenv("ALLOW_DEMO_DB_WRITE", raising=False)
+    seed.assert_writable_db("geo_test")
+    monkeypatch.setenv("ALLOW_DEMO_DB_WRITE", "1")
+    seed.assert_writable_db("geo")

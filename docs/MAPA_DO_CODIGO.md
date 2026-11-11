@@ -87,7 +87,7 @@ Textos completos dos pipelines: [briefing/queries.md](briefing/queries.md) (os n
 | Preflight | `backend/database.py::readiness` (:19) | `admin.command("ping")` | n/a |
 | Criar índices | `scripts/seed_geo.py::criar_indices` (:258-277) | `create_index`: `e2e_unq_idx` (único), `cliente_status_local_idx`, `local_2dsphere_idx`, `cliente_ts_idx`, `uf_ts_idx`, `categoria_local_idx` | `transacoes` |
 | Coleção espelho do `$geoNear` | `scripts/seed_geo.py::garantir_colecao_geonear` (:292-302) | `aggregate([{$out}])` + `create_index` 2dsphere | `transacoes_geonear` |
-| Carga do dataset | `scripts/seed_geo.py::main` (`insert_many` :461; `drop` :443-447) | `insert_many(ordered=False)` em lotes de 5.000 | `transacoes` |
+| Carga do dataset | `scripts/seed_geo.py::main` (`insert_many` :481; `drop` :463-467; guarda `assert_writable_db` :381) | `insert_many(ordered=False)` em lotes de 5.000 | `transacoes` |
 | Registro da versão do dataset | `scripts/seed_geo.py::registrar_dataset` (:305-316), `verificar_prontidao` (:319), `dataset_atual` (:359) | `replace_one(upsert)` / leituras de conferência | `demo_metadata`, `transacoes` |
 | Search index | `scripts/create_search_index_geo.sh` (`updateSearchIndex` :86, `createSearchIndex` :90) | definição `idx_geo_estabelecimento` (string pt, token+facet, geo) | `transacoes` |
 
@@ -115,7 +115,7 @@ Armadilha registrada no código: `$geoNear` não roda em `transacoes` porque ela
 - Adicionar rota -> `geo.py` (decorator `@router`) + chamada com `call('/geo/...')` na página.
 - Religar o painel de busca na UI -> a rota já existe (`geo.py:822`, corpo em `SearchRequest` :789); falta um componente que faça `call('/geo/search', {method:'POST', ...})`.
 - Índices -> `scripts/seed_geo.py::criar_indices` (:258); depois `python scripts/seed_geo.py --ensure`/`--drop`.
-- Quantidade de dados/clientes/fraudes plantadas -> `scripts/seed_geo.py` (`--clientes`, `--por-cliente`, `--fraudes`, :395-397); gerador em `gerar` (:142).
+- Quantidade de dados/clientes/fraudes plantadas -> `scripts/seed_geo.py` (`--clientes`, `--por-cliente`, `--fraudes`, :408-410); gerador em `gerar` (:142).
 - Definição do Atlas Search index -> `scripts/create_search_index_geo.sh` (bloco `definicao`).
 - Porta -> `frontend/vite.config.js` (5184 e alvo 8184), `uvicorn ... --port 8184` (README) e `ALLOWED_ORIGINS` padrão em `backend/settings.py`.
 - Segurança de mutações -> `backend/security.py::MutationGuardMiddleware` (:28). (Hoje não há rota de escrita em `/geo`; o guard protege POST/DELETE em geral, e os POSTs de leitura passam por ele.)

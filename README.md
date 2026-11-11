@@ -41,6 +41,8 @@ cp .env.example .env   # fill in MONGO_URI
 uvicorn main:app --reload --port 8184
 
 # Dataset (repo root, backend venv active)
+# writes only to a *_test database unless ALLOW_DEMO_DB_WRITE=1 (the demo db `geo` needs it)
+export ALLOW_DEMO_DB_WRITE=1
 python scripts/seed_geo.py            # 150k geo-referenced transactions in geo.transacoes
 python scripts/seed_geo.py --drop     # recreate from scratch
 python scripts/seed_geo.py --ensure   # idempotent path
