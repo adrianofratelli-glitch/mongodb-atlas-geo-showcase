@@ -74,6 +74,15 @@ docker build -t atlas-geo .
 docker run --env-file backend/.env -p 127.0.0.1:18184:8080 atlas-geo   # http://127.0.0.1:18184
 ```
 
+Prebuilt image (published to GHCR on every push to `main` that touches the image):
+
+```bash
+docker pull ghcr.io/adrianofratelli-glitch/mongodb-atlas-geo-showcase:latest
+docker run --env-file backend/.env -p 127.0.0.1:8080:8080 ghcr.io/adrianofratelli-glitch/mongodb-atlas-geo-showcase:latest
+```
+
+Same `--env-file` rule as above (`KEY=value`, no quotes); tags: `latest` and `sha-<7-char commit>`.
+
 `docker run --env-file` does not strip quotes: a line `KEY="value"` arrives with the quotes, so write `KEY=value` in the file you pass. No `VITE_*` value is baked into the image: without `VITE_GOOGLE_MAPS_KEY` the Brazil map uses its built-in fallback, and the query map uses OpenStreetMap tiles. For UI mutations, add the page origin to `ALLOWED_ORIGINS`; keep the port bound to `127.0.0.1`, because behind nginx every request reaches the backend from loopback. Health: `GET /api/health/live`; readiness: `/api/preflight`.
 
 ## Environment
