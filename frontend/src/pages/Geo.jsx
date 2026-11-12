@@ -6,6 +6,7 @@ import MapaConsulta from '../components/MapaConsulta'
 import ComparacaoRotas from '../components/ComparacaoRotas'
 import ComparacaoOperadores from '../components/ComparacaoOperadores'
 import Limites from '../components/Limites'
+import PainelIndiceBusca from '../components/PainelIndiceBusca'
 
 // Nenhum campo desta aba é texto livre. Um clienteId digitado errado devolve
 // tela vazia, e no palco isso é lido como "a demo não encontrou nada" — não
@@ -244,6 +245,16 @@ export default function Geo() {
             {viagens.seletividade && (
               <p className="geo-nota-seletividade">Dataset sintético · taxa de sinalização, não acurácia de fraude.</p>
             )}
+            {/* Conferência contra o gerador: a regra acha o que o seed plantou?
+                Não é precisão/recall de fraude — não existe esse rótulo. */}
+            {viagens.gabarito_sintetico && (
+              <p className="geo-nota-seletividade">
+                <strong>Gabarito do gerador:</strong> {viagens.gabarito_sintetico.plantados_encontrados} de{' '}
+                {viagens.gabarito_sintetico.plantados} pares plantados encontrados acima de {viagens.limite_kmh} km/h
+                {' · '}{viagens.gabarito_sintetico.emergentes} sinalizado(s) não plantado(s).{' '}
+                {viagens.gabarito_sintetico.nota}
+              </p>
+            )}
           </>
         )}
 
@@ -386,10 +397,16 @@ export default function Geo() {
                   <button className="tag" aria-pressed={!mostrarRotas} onClick={() => setMostrarRotas(false)}>Terminais · Point</button>
                 </div>}
                 {mostrarRotas && ['$geoWithin', '$geoIntersects'].includes(r.operador) ? <ComparacaoRotas operador={r.operador} centro={operadores.centro} raioKm={operadores.raioKm} cidade={`${municipios[centroIdx]?.municipio}/${municipios[centroIdx]?.uf}`} /> : <>
+                {r.erro && (
+                  <div className="banner banner-warning">
+                    <span>⚠️</span><div>O servidor recusou {r.operador}: <code>{r.erro}</code></div>
+                  </div>
+                )}
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
                   <code style={{ fontSize: 14, fontWeight: 700 }}>{r.operador}</code>
                   <span className="badge badge-gray">
-                    {r.contagem == null ? `${r.amostra.length} primeiros documentos` : `${r.contagem} documentos`}
+                    {r.erro ? 'indisponível'
+                      : r.contagem == null ? `${r.amostra.length} primeiros documentos` : `${r.contagem} documentos`}
                   </span>
                 </div>
                 {!grupoArea && <p className="query-map-note">Mapa e query de {r.operador} · centro [{operadores.centro.join(', ')}] · raio {operadores.raioKm} km</p>}
@@ -426,10 +443,13 @@ export default function Geo() {
           </div>
         )}
       </section>
+      <PainelIndiceBusca municipios={municipios} clientes={status?.fraudes_plantadas?.lista || []} />
+
       <Limites titulo="Escopo desta demonstração" itens={[
         <>O exemplo de rotas usa três LineStrings sintéticas via $documents, sem índice nem persistência, para demonstrar os predicados. Centro e raio governam terminais e rotas. Os percursos sintéticos mantêm suas distâncias ao centro quando o raio muda; não representam trajetos pelas ruas.</>,
         <>A investigação calcula distância esférica e velocidade implícita; não calcula trajeto por ruas nem aprova uma compra.</>,
-        <>As consultas de proximidade aos terminais usam índices 2dsphere. O $geoNear usa uma cópia de demonstração com um único índice geo; o nome da coleção está no resultado.</>,
+        <>As consultas de proximidade aos terminais usam índices 2dsphere. A coleção tem três índices 2dsphere em local; o $geoNear indica qual campo usar com key: "local".</>,
+        <>O gabarito do painel 01 confere a regra contra os pares que o gerador plantou; não mede fraude real.</>,
       ]} />
     </div>
   )

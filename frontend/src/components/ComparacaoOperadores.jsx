@@ -58,7 +58,7 @@ export default function ComparacaoOperadores({ area, selecionado, onSelecionar, 
       })}
     </div>
     {!area && <p className="query-map-note">
-      Nesta demo, o pipeline de $geoNear agrupa por terminal e consulta uma cópia da coleção.
+      Nesta demo, o pipeline de $geoNear agrupa por terminal (key: "local", na mesma coleção).
       A diferença nas listas inclui esse agrupamento; não é uma diferença de precisão entre operadores.
     </p>}
   </>
