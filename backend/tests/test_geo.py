@@ -764,3 +764,18 @@ def test_explain_compare_mostra_o_hint_real_de_cada_plano(monkeypatch):
         assert f'.hint("{plano["hint"]}")' in plano["comando"]
         assert plano["comando"] in r["query"]
     assert {p["hint"] for p in r["planos"]} == {geo.INDICE_COMPOSTO, geo.INDICE_GEO_PURO}
+
+
+def test_explain_find_monta_o_texto_do_comando_enviado(monkeypatch):
+    enviados = []
+
+    class Banco:
+        def command(self, comando):
+            enviados.append(comando)
+            return {"queryPlanner": {"winningPlan": {"stage": "IXSCAN", "indexName": "x"}}}
+
+    monkeypatch.setattr(geo, "banco", Banco())
+    r = geo._explain_find({"clienteId": "CLI1"}, geo.INDICE_COMPOSTO)
+    assert enviados[0]["explain"]["hint"] == geo.INDICE_COMPOSTO
+    assert f'.hint("{geo.INDICE_COMPOSTO}")' in r["comando"]
+    assert '"clienteId": "CLI1"' in r["comando"]

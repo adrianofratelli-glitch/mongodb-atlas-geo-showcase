@@ -40,5 +40,5 @@ do `$geoNear` é igual à do `$geoWithin` com `$centerSphere` no mesmo raio.
   por seed.
 - A armadilha passa a ser ensinada como ela é: com mais de um índice 2dsphere
   no campo, `key` diz qual usar.
-- O invariante do `AGENTS.md` ("`$geoNear` roda em `transacoes_geonear`") fica
-  desatualizado. Ele mora em `_shared/agent-config` e precisa ser corrigido lá.
+- O invariante do `AGENTS.md` ("`$geoNear` roda em `transacoes_geonear`") foi
+  atualizado para `key: "local"` (o arquivo mora em `_shared/agent-config`).

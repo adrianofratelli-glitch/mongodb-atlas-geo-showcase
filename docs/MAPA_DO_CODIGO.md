@@ -46,27 +46,27 @@ Todo fetch do front passa por `useApi().call` (`frontend/src/hooks/useApi.js`); 
 
 | Tela / botão | Componente (arquivo:linha) | Chamada HTTP | Handler | Função de negócio | Onde toca o MongoDB |
 |---|---|---|---|---|---|
-| Abrir a página: pill "pronto/não pronto" | `App.jsx:67` (fetch direto) | `GET /preflight` | `main.py:75` `preflight` | `database.py::readiness` + `geo.py::preflight_checks` (:221) | `ping`; `estimated_document_count` em `geo.transacoes`; `list_search_indexes` |
-| Abrir a página: status do dataset (lista de clientes plantados, índices) | `Geo.jsx:51` | `GET /geo/status` | `geo.py:292` `status` | `geo.py::status`, `_manifesto` (:98, cache) | `estimated_document_count`, `index_information` em `transacoes`; `find_one` em `demo_metadata` (fallback `backend/data/fraud_seeds.json`) |
-| Abrir a página: lista de municípios (select de centro) | `Geo.jsx:52` | `GET /geo/municipios` | `geo.py:325` `municipios` | `geo.py::_municipios` (:200, cache em memória) | `aggregate` `$group` por município/UF em `transacoes` |
-| 01 · "Varrer a coleção inteira" | `Geo.jsx:174` -> `rodarViagens()` (:77) | `GET /geo/impossible-travel?limiteKmh=` | `geo.py:383` `impossible_travel` | `geo.py::impossible_travel` + `_haversine_stages` (:62) + `_gabarito` (:618) | `aggregate` `$setWindowFields`/`$shift` + `$facet`, `allowDiskUse` (:502) em `transacoes` |
+| Abrir a página: pill "pronto/não pronto" | `App.jsx:67` (fetch direto) | `GET /preflight` | `main.py:75` `preflight` | `database.py::readiness` + `geo.py::preflight_checks` (:223) | `ping`; `estimated_document_count` em `geo.transacoes`; `list_search_indexes` |
+| Abrir a página: status do dataset (lista de clientes plantados, índices) | `Geo.jsx:51` | `GET /geo/status` | `geo.py:294` `status` | `geo.py::status`, `_manifesto` (:98, cache) | `estimated_document_count`, `index_information` em `transacoes`; `find_one` em `demo_metadata` (fallback `backend/data/fraud_seeds.json`) |
+| Abrir a página: lista de municípios (select de centro) | `Geo.jsx:52` | `GET /geo/municipios` | `geo.py:327` `municipios` | `geo.py::_municipios` (:202, cache em memória) | `aggregate` `$group` por município/UF em `transacoes` |
+| 01 · "Varrer a coleção inteira" | `Geo.jsx:174` -> `rodarViagens()` (:77) | `GET /geo/impossible-travel?limiteKmh=` | `geo.py:385` `impossible_travel` | `geo.py::impossible_travel` + `_haversine_stages` (:62) + `_gabarito` (:620) | `aggregate` `$setWindowFields`/`$shift` + `$facet`, `allowDiskUse` (`geo.py:519`) em `transacoes` |
 | 01 · "Só este cliente" (select "recorte por cliente") | `Geo.jsx:185` -> `rodarViagens(clienteFiltro)` | `GET /geo/impossible-travel?limiteKmh=&clienteId=` | idem | idem (com `$match` de `clienteId` antes da janela) | idem |
 | 01 · select de limite km/h | `Geo.jsx:169` | nenhuma até clicar em um botão acima | n/a | n/a | n/a |
 | 01 · clicar numa linha da tabela / mini mapa | `Geo.jsx:274` (`setViagemSel`), `MiniMapa` `Geo.jsx:301` | nenhuma (usa o resultado já recebido) | n/a | n/a | n/a |
-| 02 · select de município (centro) e de raio | `Geo.jsx:~375-385` -> estado `centroIdx`, `raioOperadores` | dispara o efeito abaixo | n/a | n/a | n/a |
-| 02 · carga automática ao mudar centro/raio (debounce 250 ms) e botão "rodar" (`rodarOperadores`) | `Geo.jsx:58-70`, botão `Geo.jsx:386` | `POST /geo/operadores` | `geo.py:752` `operadores_geo` | `geo.py::operadores_geo`, `_poligono_quadrado` (:642), `_geo_near_resultado` (:691) | `count_documents` + `find` com `$geoWithin`, `$geoIntersects`, `$near`, `$nearSphere` em `transacoes`; `aggregate` `$geoNear` com `key: "local"` em `transacoes` |
-| 02 · abas `$geoWithin`/`$geoIntersects` x `$near`/`$nearSphere` | `Geo.jsx:354-357` e `ComparacaoOperadores.jsx:39` | nenhuma | n/a | n/a | n/a |
-| 02 · "Rotas · LineString" (e "Executar novamente no Atlas") | `Geo.jsx:385`, `ComparacaoRotas.jsx:12-15` e botão `:41` | `GET /geo/rotas-comparar?lng=&lat=&raioKm=` | `geo.py:823` `comparar_rotas` | `geo.py::comparar_rotas` | `db.aggregate` com `$documents` + `$facet` (:771-776), sem coleção |
-| 02 · "Terminais · Point" | `Geo.jsx:386` | nenhuma (mostra o resultado de `/geo/operadores`) | n/a | n/a | n/a |
-| 03 · "Comparar planos" (selects cliente/raio, centro próprio) | `PainelIndiceBusca.jsx:31` | `POST /geo/explain-compare` | `geo.py:338` `explain_compare` | `geo.py::explain_compare`, `_explain_find` (:182), `_resumo_plano` (:141) | `command` `explain` (`executionStats`) de `find` com `hint` nos dois índices, em `transacoes` |
-| 03 · "Buscar" (selects termo/raio) | `PainelIndiceBusca.jsx:50` | `POST /geo/search` | `geo.py:901` `geo_search` | `geo.py::geo_search` | `aggregate` `$search` (:1012) e `$searchMeta` (:1013) em `transacoes` |
-| "Ver query executada" / "Ver pipeline completo" | `QueryBlock.jsx`, `App.jsx:126`, `Geo.jsx:348`, `PainelIndiceBusca.jsx` | nenhuma (texto vem da resposta) | n/a | n/a | n/a |
+| 02 · select de município (centro) e de raio | `Geo.jsx:377-382` -> estado `centroIdx`, `raioOperadores` | dispara o efeito abaixo | n/a | n/a | n/a |
+| 02 · carga automática ao mudar centro/raio (debounce 250 ms) e botão "rodar" (`rodarOperadores`) | `Geo.jsx:58-70`, botão `Geo.jsx:386` | `POST /geo/operadores` | `geo.py:754` `operadores_geo` | `geo.py::operadores_geo`, `_poligono_quadrado` (:644), `_geo_near_resultado` (:693) | `count_documents` + `find` com `$geoWithin`, `$geoIntersects`, `$near`, `$nearSphere` em `transacoes`; `aggregate` `$geoNear` com `key: "local"` em `transacoes` |
+| 02 · abas `$geoWithin`/`$geoIntersects` x `$near`/`$nearSphere` | `Geo.jsx:365-368` e `ComparacaoOperadores.jsx:40` | nenhuma | n/a | n/a | n/a |
+| 02 · "Rotas · LineString" (e "Executar novamente no Atlas") | `Geo.jsx:396`, `ComparacaoRotas.jsx:12-15` e botão `:41` | `GET /geo/rotas-comparar?lng=&lat=&raioKm=` | `geo.py:825` `comparar_rotas` | `geo.py::comparar_rotas` | `db.aggregate` com `$documents` + `$facet` (`geo.py:851`), sem coleção |
+| 02 · "Terminais · Point" | `Geo.jsx:397` | nenhuma (mostra o resultado de `/geo/operadores`) | n/a | n/a | n/a |
+| 03 · "Comparar planos" (selects cliente/raio, centro próprio) | `PainelIndiceBusca.jsx:31` | `POST /geo/explain-compare` | `geo.py:340` `explain_compare` | `geo.py::explain_compare`, `_explain_find` (:182), `_resumo_plano` (:141) | `command` `explain` (`executionStats`) de `find` com `hint` nos dois índices, em `transacoes` |
+| 03 · "Buscar" (selects termo/raio) | `PainelIndiceBusca.jsx:50` | `POST /geo/search` | `geo.py:903` `geo_search` | `geo.py::geo_search` | `aggregate` `$search` (:1014) e `$searchMeta` (:1015) em `transacoes` |
+| "Ver query executada" / "Ver pipeline completo" | `QueryBlock.jsx`, `App.jsx:126`, `Geo.jsx:348,438`, `PainelIndiceBusca.jsx:136` | nenhuma (texto vem da resposta) | n/a | n/a | n/a |
 
 Rotas que existem na API mas **não têm botão na UI** (conferido: nenhum `call` para elas em `frontend/src`):
 
 | Rota | Handler | Função / o que faz | Mongo |
 |---|---|---|---|
-| `GET /geo/sinais-ao-vivo` | `geo.py:243` | `sinais_ao_vivo`: lê sinais já calculados por um processor externo | `find`+`sort`+`limit`, 2x `count_documents` em `sinais_ao_vivo` |
+| `GET /geo/sinais-ao-vivo` | `geo.py:245` | `sinais_ao_vivo`: lê sinais já calculados por um processor externo | `find`+`sort`+`limit`, 2x `count_documents` em `sinais_ao_vivo` |
 | `GET /health/live`, `/health/ready`, `/` | `main.py:59-72` | saúde | `ping` (ready) |
 
 ## 3. Onde estão as queries MongoDB
@@ -75,19 +75,19 @@ Textos completos dos pipelines: [briefing/queries.md](briefing/queries.md) (os n
 
 | O que faz | arquivo::função (linha) | Operador / pipeline principal | Collection |
 |---|---|---|---|
-| Municípios do dataset | `backend/routers/geo.py::_municipios` (:200-218) | `$group` + `$sort` + `$project`, `allowDiskUse` | `transacoes` |
-| Contagem para preflight/status | `geo.py::preflight_checks` (:221), `status` (:292) | `estimated_document_count` | `transacoes` |
-| Índices existentes | `geo.py::status` (:292) | `index_information` | `transacoes` |
-| Search index existe? | `geo.py::_search_disponivel` (:190-198) | `list_search_indexes` | `transacoes` |
-| Explain com hint | `geo.py::_explain_find` (:182-187) e `explain_compare` (:338) | comando `explain` (`executionStats`) de `find` com `$geoWithin` + `$centerSphere` | `transacoes` |
-| Viagem impossível | `geo.py::impossible_travel` (:383; `aggregate` :517) | `$setWindowFields` + `$shift`, haversine em MQL (`_haversine_stages` :62), `$facet` com ramos `avaliados`/`sinais`/`total_sinais`/`clientes_sinalizados` (`$addToSet`, gabarito)/`aprovados` (`$sample`) | `transacoes` |
-| Operadores geo (find) | `geo.py::operadores_geo` (:752; filtros :769-772; `count_documents`/`find` :783-815) | `$geoWithin`, `$geoIntersects` (`$geometry` Polygon), `$near`, `$nearSphere` | `transacoes` |
-| `$geoNear` | `geo.py::_geo_near_resultado` (:691; `aggregate` :725) | `$geoNear` com `key: "local"` + `$facet` (amostra por terminal e total); degrada o card se o servidor recusar | `transacoes` |
-| Rotas sintéticas | `geo.py::comparar_rotas` (:823) | `$documents` + `$facet` com `$geoWithin` e `$geoIntersects` em `$match`, `maxTimeMS` | nenhuma (documentos em memória) |
-| Busca textual + geo | `geo.py::geo_search` (:901; execução :1012-1013) | `$search` `compound` (`text` fuzzy ou `exists`; `should: near` com termo; `geoWithin` circular + `in` categoria), `$searchMeta` `facet` | `transacoes` (index `idx_geo_estabelecimento`) |
-| Âncora da contestação | `geo.py::_ancora_da_contestacao` (:882) | `find_one` por `endToEndId` | `transacoes` |
+| Municípios do dataset | `backend/routers/geo.py::_municipios` (:202-220) | `$group` + `$sort` + `$project`, `allowDiskUse` | `transacoes` |
+| Contagem para preflight/status | `geo.py::preflight_checks` (:223), `status` (:294) | `estimated_document_count` | `transacoes` |
+| Índices existentes | `geo.py::status` (:294) | `index_information` | `transacoes` |
+| Search index existe? | `geo.py::_search_disponivel` (:192-200) | `list_search_indexes` | `transacoes` |
+| Explain com hint | `geo.py::_explain_find` (:182-189) e `explain_compare` (:340) | comando `explain` (`executionStats`) de `find` com `$geoWithin` + `$centerSphere` | `transacoes` |
+| Viagem impossível | `geo.py::impossible_travel` (:385; `aggregate` :519) | `$setWindowFields` + `$shift`, haversine em MQL (`_haversine_stages` :62), `$facet` com ramos `avaliados`/`sinais`/`total_sinais`/`clientes_sinalizados` (`$addToSet`, gabarito)/`aprovados` (`$sample`) | `transacoes` |
+| Operadores geo (find) | `geo.py::operadores_geo` (:754; filtros :771-774; `count_documents`/`find` :785-817) | `$geoWithin`, `$geoIntersects` (`$geometry` Polygon), `$near`, `$nearSphere` | `transacoes` |
+| `$geoNear` | `geo.py::_geo_near_resultado` (:693; `aggregate` :727) | `$geoNear` com `key: "local"` + `$facet` (amostra por terminal e total); degrada o card se o servidor recusar | `transacoes` |
+| Rotas sintéticas | `geo.py::comparar_rotas` (:825) | `$documents` + `$facet` com `$geoWithin` e `$geoIntersects` em `$match`, `maxTimeMS` | nenhuma (documentos em memória) |
+| Busca textual + geo | `geo.py::geo_search` (:903; execução :1014-1015) | `$search` `compound` (`text` fuzzy ou `exists`; `should: near` com termo; `geoWithin` circular + `in` categoria), `$searchMeta` `facet` | `transacoes` (index `idx_geo_estabelecimento`) |
+| Âncora da contestação | `geo.py::_ancora_da_contestacao` (:884) | `find_one` por `endToEndId` | `transacoes` |
 | Manifesto de plantados | `geo.py::_manifesto` (:98) | `find_one({_id: "geo_seed"})`, fallback arquivo | `demo_metadata` |
-| Sinais ao vivo | `geo.py::sinais_ao_vivo` (:243; `find` :258; counts :262-263) | `find` sem o campo `pontos`, ordenado por `detectadoEm` desc | `sinais_ao_vivo` |
+| Sinais ao vivo | `geo.py::sinais_ao_vivo` (:245; `find` :260; counts :264-265) | `find` sem o campo `pontos`, ordenado por `detectadoEm` desc | `sinais_ao_vivo` |
 | Preflight | `backend/database.py::readiness` (:19) | `admin.command("ping")` | n/a |
 | Criar índices | `scripts/seed_geo.py::criar_indices` (:261-280) | `create_index`: `e2e_unq_idx` (único), `cliente_status_local_idx`, `local_2dsphere_idx`, `cliente_ts_idx`, `uf_ts_idx`, `categoria_local_idx` | `transacoes` |
 | Carga do dataset | `scripts/seed_geo.py::main` (`insert_many` :500; `drop` :482-486; guarda `assert_writable_db` :397) | `insert_many(ordered=False)` em lotes de 5.000 | `transacoes` |
@@ -111,12 +111,12 @@ Armadilha registrada no código: `transacoes` tem três índices 2dsphere em `lo
 ## 5. "Quero mexer em..."
 
 - Texto/títulos da tela -> `frontend/src/pages/Geo.jsx` (seções 01 e 02), `frontend/src/components/PainelIndiceBusca.jsx` (seção 03) e `App.jsx` (cabeçalho).
-- A regra de viagem impossível (limite, corte, saída) -> `backend/routers/geo.py::impossible_travel` (:383); fórmula de distância em `_haversine_stages` (:62); gabarito em `_gabarito` (:618).
+- A regra de viagem impossível (limite, corte, saída) -> `backend/routers/geo.py::impossible_travel` (:385); fórmula de distância em `_haversine_stages` (:62); gabarito em `_gabarito` (:620).
 - Opções do select de km/h -> `LIMITES_KMH` em `frontend/src/pages/Geo.jsx`.
-- Operadores comparados (filtros e `$geoNear`) -> `geo.py::operadores_geo` (:752) e `_geo_near_resultado` (:691).
-- Rotas de exemplo (coordenadas) -> `geo.py::comparar_rotas` (:823).
+- Operadores comparados (filtros e `$geoNear`) -> `geo.py::operadores_geo` (:754) e `_geo_near_resultado` (:693).
+- Rotas de exemplo (coordenadas) -> `geo.py::comparar_rotas` (:825).
 - Adicionar rota -> `geo.py` (decorator `@router`) + chamada com `call('/geo/...')` na página.
-- Busca e explain da seção 03 -> `frontend/src/components/PainelIndiceBusca.jsx` (termos e raios nas constantes do topo) e `geo.py::geo_search` (:901, corpo em `SearchRequest` :867).
+- Busca e explain da seção 03 -> `frontend/src/components/PainelIndiceBusca.jsx` (termos e raios nas constantes do topo) e `geo.py::geo_search` (:903, corpo em `SearchRequest` :869).
 - Índices -> `scripts/seed_geo.py::criar_indices` (:261); depois `python scripts/seed_geo.py --ensure`/`--drop`.
 - Quantidade de dados/clientes/fraudes plantadas -> `scripts/seed_geo.py` (`--clientes`, `--por-cliente`, `--fraudes`, :424-426); gerador em `gerar` (:145).
 - Definição do Atlas Search index -> `scripts/create_search_index_geo.sh` (bloco `definicao`).

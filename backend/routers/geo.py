@@ -184,7 +184,9 @@ def _explain_find(filtro: dict, hint: str) -> dict[str, Any]:
         "explain": {"find": GEO_COLECAO, "filter": filtro, "hint": hint},
         "verbosity": "executionStats",
     }
-    return _resumo_plano(banco.command(comando))
+    # O texto mongosh sai do mesmo dicionário enviado ao servidor.
+    enviado = comando["explain"]
+    return {**_resumo_plano(banco.command(comando)), "comando": _comando_explain(enviado["filter"], enviado["hint"])}
 
 
 def _search_disponivel() -> tuple[bool, str]:
@@ -369,9 +371,9 @@ def explain_compare(pedido: ExplainRequest):
     ]
     # Um comando por plano, com o hint que de fato foi enviado ao servidor:
     # a tela mostra exatamente o que rodou, sem placeholder.
-    comandos = [_comando_explain(filtro, p["hint"]) for p in planos]
-    for plano, comando in zip(planos, comandos):
-        plano["comando"] = comando
+    for plano in planos:
+        plano.setdefault("comando", _comando_explain(filtro, plano["hint"]))
+    comandos = [plano["comando"] for plano in planos]
     return {
         "filtro": filtro,
         "query": "\n\n".join(comandos),
