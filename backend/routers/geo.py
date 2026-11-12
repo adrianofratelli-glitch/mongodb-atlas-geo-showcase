@@ -101,6 +101,10 @@ def _manifesto() -> dict[str, Any]:
     O banco vem primeiro porque é ele que a API consulta: um seed num banco
     `*_test` grava o manifesto só lá, sem reescrever o arquivo versionado. O
     arquivo continua como fallback para bancos semeados antes dessa mudança.
+
+    Só o manifesto vindo do banco fica em cache. O fallback do arquivo é
+    relido a cada chamada: um banco fora do ar ou ainda sem `--ensure` não
+    pode prender a API no arquivo depois que o banco passa a responder.
     """
     global _manifesto_cache
     if _manifesto_cache is not None:
@@ -119,7 +123,7 @@ def _manifesto() -> dict[str, Any]:
             dados = {}
         if dados.get("clientes"):
             manifesto = {"clientes": dados["clientes"], "limite_kmh": dados.get("limite_kmh"), "origem": "arquivo"}
-    if manifesto:
+    if manifesto.get("origem") == "banco":
         _manifesto_cache = manifesto
     return manifesto
 
@@ -164,6 +168,15 @@ def _resumo_plano(explain: dict) -> dict[str, Any]:
         "totalDocsExamined": stats.get("totalDocsExamined"),
         "executionTimeMillis": stats.get("executionTimeMillis"),
     }
+
+
+def _comando_explain(filtro: dict, hint: str) -> str:
+    """O explain executado por `_explain_find`, em sintaxe mongosh."""
+    return (
+        f'db.{GEO_COLECAO}.find({json.dumps(filtro, ensure_ascii=False)})\n'
+        f'  .hint("{hint}")\n'
+        f'  .explain("executionStats")'
+    )
 
 
 def _explain_find(filtro: dict, hint: str) -> dict[str, Any]:
@@ -350,17 +363,19 @@ def explain_compare(pedido: ExplainRequest):
     except OperationFailure as erro:
         raise HTTPException(status_code=409, detail=f"Explain falhou: {erro.details.get('errmsg', str(erro))}")
 
+    planos = [
+        {"rotulo": "Índice composto (igualdade + geo)", "hint": INDICE_COMPOSTO, **composto},
+        {"rotulo": "2dsphere puro", "hint": INDICE_GEO_PURO, **geo_puro},
+    ]
+    # Um comando por plano, com o hint que de fato foi enviado ao servidor:
+    # a tela mostra exatamente o que rodou, sem placeholder.
+    comandos = [_comando_explain(filtro, p["hint"]) for p in planos]
+    for plano, comando in zip(planos, comandos):
+        plano["comando"] = comando
     return {
         "filtro": filtro,
-        "query": (
-            f'db.{GEO_COLECAO}.find({json.dumps(filtro, ensure_ascii=False)})\n'
-            f'  .hint("<índice>")\n'
-            f'  .explain("executionStats")'
-        ),
-        "planos": [
-            {"rotulo": "Índice composto (igualdade + geo)", "hint": INDICE_COMPOSTO, **composto},
-            {"rotulo": "2dsphere puro", "hint": INDICE_GEO_PURO, **geo_puro},
-        ],
+        "query": "\n\n".join(comandos),
+        "planos": planos,
     }
 
 

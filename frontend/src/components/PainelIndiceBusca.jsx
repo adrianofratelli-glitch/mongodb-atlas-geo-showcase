@@ -133,7 +133,7 @@ export default function PainelIndiceBusca({ municipios, clientes }) {
                   número.
                 </p>
               )}
-              <QueryBlock label="Query executada" query={explain.query} />
+              <QueryBlock label="Comandos executados (um explain por índice)" query={explain.query} />
             </>
           )}
         </div>

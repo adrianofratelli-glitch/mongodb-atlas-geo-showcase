@@ -88,6 +88,10 @@ db.transacoes.find({
 // e a mesma query com .hint("local_2dsphere_idx")
 ```
 
+A resposta traz `comando` em cada plano (o explain com o `hint` real,
+montado por `geo.py::_comando_explain`) e `query` com os dois juntos; é isso
+que o painel 03 mostra em "Comandos executados".
+
 **Por que existe**: prova, com número medido (não narrativa), que o índice
 2dsphere está sendo usado (IXSCAN, não COLLSCAN) e compara custo entre um
 índice composto (igualdade + geo) e um geo puro. O código deixa explícito

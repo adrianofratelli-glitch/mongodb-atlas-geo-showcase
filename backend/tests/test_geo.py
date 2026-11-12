@@ -735,3 +735,32 @@ def test_search_com_termo_desempata_pela_proximidade_no_proprio_search(monkeypat
     capturado.clear()
     geo.geo_search(geo.SearchRequest(termo="", centro=[-46.6, -23.5], raioKm=20))
     assert "should" not in capturado[0][0]["$search"]["compound"]
+
+
+def test_fallback_do_arquivo_nao_fica_em_cache(monkeypatch, tmp_path):
+    """Banco fora do ar cai no arquivo; quando volta, o banco passa a valer."""
+    _manifesto_real(monkeypatch)
+    arquivo = tmp_path / "fraud_seeds.json"
+    arquivo.write_text('{"clientes": ["CLI_ARQUIVO"]}', encoding="utf-8")
+    monkeypatch.setattr(geo, "ARQUIVO_FRAUDES", arquivo)
+    monkeypatch.setattr(geo, "banco", _BancoMetadata(erro=RuntimeError("sem cluster")))
+    assert geo._clientes_plantados() == {"CLI_ARQUIVO"}
+    assert geo._manifesto_cache is None
+
+    monkeypatch.setattr(geo, "banco", _BancoMetadata({"clientesPlantados": ["CLI_BANCO"]}))
+    assert geo._clientes_plantados() == {"CLI_BANCO"}
+    assert geo._manifesto_cache["origem"] == "banco"
+
+    # Em cache: o banco não é consultado de novo.
+    monkeypatch.setattr(geo, "banco", _BancoMetadata(erro=AssertionError("não devia consultar")))
+    assert geo._clientes_plantados() == {"CLI_BANCO"}
+
+
+def test_explain_compare_mostra_o_hint_real_de_cada_plano(monkeypatch):
+    monkeypatch.setattr(geo, "_explain_find", lambda _f, hint: {"indice_usado": hint})
+    r = geo.explain_compare(geo.ExplainRequest(clienteId="CLI1", centro=[-46.6, -23.5]))
+    assert "<índice>" not in r["query"]
+    for plano in r["planos"]:
+        assert f'.hint("{plano["hint"]}")' in plano["comando"]
+        assert plano["comando"] in r["query"]
+    assert {p["hint"] for p in r["planos"]} == {geo.INDICE_COMPOSTO, geo.INDICE_GEO_PURO}
