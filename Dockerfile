@@ -4,7 +4,8 @@
 # (prefix stripped, as the Vite proxy does).
 #   docker build -t atlas-geo .
 
-FROM node:22-alpine AS frontend-build
+# The UI bundle is platform-independent: build it natively (npm under QEMU crashes on arm64).
+FROM --platform=$BUILDPLATFORM node:22-alpine AS frontend-build
 WORKDIR /build
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
