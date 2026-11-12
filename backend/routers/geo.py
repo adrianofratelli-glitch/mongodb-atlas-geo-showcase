@@ -46,15 +46,16 @@ DIAS_DATASET = 90
 
 banco = client[GEO_DB]
 colecao = banco[GEO_COLECAO]
-# $geoNear recusa rodar (mesmo com hint) quando o campo geo tem mais de um
-# índice 2dsphere — e `transacoes` tem dois de propósito (o puro e o composto
-# da Demo A de explain). Cópia mantida por scripts/seed_geo.py com um índice
-# só, dedicada a esse operador.
-COLECAO_GEONEAR = "transacoes_geonear"
-colecao_geonear = banco[COLECAO_GEONEAR]
+# `local` tem três índices 2dsphere de propósito (puro, composto da Demo A e
+# categoria+local). Sem `key`, `$geoNear` recusa escolher entre eles; com
+# `key: "local"` ele roda na própria coleção (medido no 9.0.7: mesma contagem e
+# mesmos documentos examinados que a antiga cópia com índice único). ADR 0001.
+CAMPO_GEO = "local"
+ID_METADATA = "geo_seed"
 
-# Cache do resumo de municípios: a lista muda apenas quando o seed roda de novo.
+# Caches: municípios e manifesto mudam apenas quando o seed roda de novo.
 _municipios_cache: list[dict[str, Any]] | None = None
+_manifesto_cache: dict[str, Any] | None = None
 
 
 # ─────────────────────────────────────────────────────────────── helpers ────
@@ -94,19 +95,38 @@ def _haversine_stages(destino: str, lat1: Any, lng1: Any, lat2: Any, lng2: Any) 
     }}}}]
 
 
-def _clientes_plantados() -> set[str]:
-    """IDs cujo par de impossible travel foi plantado pelo seed.
+def _manifesto() -> dict[str, Any]:
+    """Manifesto dos pares plantados: `demo_metadata` do banco, senão o arquivo.
 
-    Lido do arquivo que o próprio seed grava, e não de uma lista no código: se o
-    dataset for regerado com outro número de casos, a marcação acompanha.
+    O banco vem primeiro porque é ele que a API consulta: um seed num banco
+    `*_test` grava o manifesto só lá, sem reescrever o arquivo versionado. O
+    arquivo continua como fallback para bancos semeados antes dessa mudança.
     """
-    if not ARQUIVO_FRAUDES.exists():
-        return set()
+    global _manifesto_cache
+    if _manifesto_cache is not None:
+        return _manifesto_cache
+    manifesto: dict[str, Any] = {}
     try:
-        dados = json.loads(ARQUIVO_FRAUDES.read_text(encoding="utf-8"))
-    except (ValueError, OSError):
-        return set()
-    return {c["clienteId"] if isinstance(c, dict) else c for c in dados.get("clientes", [])}
+        meta = banco["demo_metadata"].find_one({"_id": ID_METADATA}) or {}
+    except Exception:  # noqa: BLE001 - sem banco, tenta o arquivo
+        meta = {}
+    if meta.get("clientesPlantados"):
+        manifesto = {"clientes": meta["clientesPlantados"], "limite_kmh": meta.get("limiteKmh"), "origem": "banco"}
+    elif ARQUIVO_FRAUDES.exists():
+        try:
+            dados = json.loads(ARQUIVO_FRAUDES.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            dados = {}
+        if dados.get("clientes"):
+            manifesto = {"clientes": dados["clientes"], "limite_kmh": dados.get("limite_kmh"), "origem": "arquivo"}
+    if manifesto:
+        _manifesto_cache = manifesto
+    return manifesto
+
+
+def _clientes_plantados() -> set[str]:
+    """IDs cujo par de impossible travel foi plantado pelo seed (gabarito sintético)."""
+    return {c["clienteId"] if isinstance(c, dict) else c for c in _manifesto().get("clientes", [])}
 
 
 def _milhar(n: int) -> str:
@@ -269,13 +289,14 @@ def status():
 
     search_ok, search_msg = _search_disponivel()
     fraudes = {}
-    if ARQUIVO_FRAUDES.exists():
-        dados = json.loads(ARQUIVO_FRAUDES.read_text(encoding="utf-8"))
+    manifesto = _manifesto()
+    if manifesto:
         # A lista vai inteira para a UI: os campos da aba de Geo são seleções,
         # não texto livre — um clienteId digitado errado devolve tela vazia e no
         # palco isso é lido como "a demo não achou nada".
-        ids = sorted(c["clienteId"] if isinstance(c, dict) else c for c in dados.get("clientes", []))
-        fraudes = {"clientes": len(ids), "limite_kmh": dados.get("limite_kmh"), "lista": ids}
+        ids = sorted(_clientes_plantados())
+        fraudes = {"clientes": len(ids), "limite_kmh": manifesto.get("limite_kmh"), "lista": ids,
+                   "origem": manifesto.get("origem")}
 
     return {
         "db": GEO_DB,
@@ -463,11 +484,17 @@ def impossible_travel(
     # corte geométrico, porque a pergunta de um time de risco não é "quantos
     # sinais saíram" e sim "de quantas oportunidades" — sem denominador,
     # "40 pares" não diz se a regra é seletiva ou se inunda a fila de alertas.
+    corte_tabela = next(i for i, etapa in enumerate(ramo_sinais) if "$sort" in etapa)
     pipeline.append({"$facet": {
         "avaliados": [{"$count": "pares"}],
         "sinais": ramo_sinais,
         # Conta antes do corte da tabela; sem array ilimitado no servidor.
-        "total_sinais": ramo_sinais[:next(i for i, etapa in enumerate(ramo_sinais) if "$sort" in etapa)] + [{"$count": "total"}],
+        "total_sinais": ramo_sinais[:corte_tabela] + [{"$count": "total"}],
+        # Clientes sinalizados (sem o corte da tabela), para conferir a regra
+        # contra o gabarito do gerador. Limitado pelo número de clientes.
+        "clientes_sinalizados": ramo_sinais[:corte_tabela] + [
+            {"$group": {"_id": None, "ids": {"$addToSet": "$clienteId"}}},
+        ],
         "aprovados": ramo_aprovados,
     }})
 
@@ -479,9 +506,12 @@ def impossible_travel(
     aprovados = bloco.get("aprovados", [])
     total_sinais = (bloco.get("total_sinais") or [{}])[0].get("total", 0)
     avaliados = (bloco.get("avaliados") or [{}])[0].get("pares", 0)
+    ids_sinalizados = set((bloco.get("clientes_sinalizados") or [{}])[0].get("ids", []))
+    plantados = _clientes_plantados()
 
     for r in sinalizados:
         r["classificacao"] = "sinalizada"
+        r["plantado"] = r.get("clienteId") in plantados
     for r in aprovados:
         r["classificacao"] = "nao_sinalizada"
 
@@ -506,6 +536,7 @@ def impossible_travel(
         "encontrados": len(sinalizados),
         "encontrados_aprovados": len(aprovados),
         "truncado": total_sinais > len(sinalizados),
+        "gabarito_sintetico": _gabarito(ids_sinalizados, plantados, clienteId),
         "pipeline": pipeline,
         "resultados": resultados,
         # O volume operacional é a pergunta de quem opera a fila de alertas, e
@@ -559,13 +590,37 @@ def impossible_travel(
             ),
             "leitura": (
                 "Varredura completa é o modo de investigação: roda sob demanda, sobre o recorte "
-                "que o analista pedir. Para decisão no fluxo, o caminho é o sinal em event time do "
-                "processor geoSinais30s do módulo 07, que calcula na passagem e não varre "
-                "histórico. Em produção, o recorte "
+                "que o analista pedir. Para decisão no fluxo, o caminho é calcular o sinal na "
+                "passagem do evento (Change Streams ou Atlas Stream Processing, fora desta PoV), "
+                "sem varrer histórico. Em produção, o recorte "
                 "por cliente ou por período é o que mantém este mesmo pipeline barato — filtrar "
                 "antes da janela reduz o universo, e o índice de clienteId sustenta o filtro."
             ),
         },
+    }
+
+
+def _gabarito(ids_sinalizados: set[str], plantados: set[str], cliente_id: str | None) -> dict[str, Any] | None:
+    """Confere a regra contra o que o gerador plantou — não contra fraude real.
+
+    O seed planta um par acima do limite em N clientes; os demais clientes
+    viajam dentro dos próprios clusters. Isso dá um gabarito sintético: quantos
+    plantados a regra encontra neste limite e quantos sinalizados não foram
+    plantados (emergentes). É cobertura do gerador, não precisão/recall de
+    fraude, e por isso não é chamado assim.
+    """
+    if cliente_id or not plantados:
+        return None
+    encontrados = len(ids_sinalizados & plantados)
+    return {
+        "plantados": len(plantados),
+        "plantados_encontrados": encontrados,
+        "emergentes": len(ids_sinalizados - plantados),
+        "nota": (
+            "Gabarito do gerador sintético: o seed planta um par acima do limite em cada cliente "
+            "listado. Mede se a regra acha o que foi plantado neste limite; não é precisão nem "
+            "recall de fraude, porque não existe rótulo de fraude confirmada."
+        ),
     }
 
 
@@ -630,6 +685,8 @@ def _geo_near_resultado(ponto: dict, raio_km: float, limite: int) -> dict:
     pipeline = [
         {"$geoNear": {
             "near": ponto,
+            # `key` resolve a ambiguidade entre os índices 2dsphere de `local`.
+            "key": CAMPO_GEO,
             "distanceField": "distanciaMetros",
             "maxDistance": raio_km * 1000,
             "spherical": True,
@@ -648,23 +705,29 @@ def _geo_near_resultado(ponto: dict, raio_km: float, limite: int) -> dict:
             "total": [{"$count": "n"}],
         }},
     ]
-    # Roda em colecao_geonear (índice único), não em colecao (dois índices
-    # 2dsphere) — testei hint no aggregate(), "key" no próprio estágio e hint
-    # cru via db.command, e o servidor recusou os três com "There is more than
-    # one 2dsphere index". Sem escape via hint, a saída é isolar o dado.
-    saida = list(colecao_geonear.aggregate(pipeline))
+    base = {"operador": "$geoNear", "colecao": GEO_COLECAO, "query": pipeline}
+    try:
+        saida = list(colecao.aggregate(pipeline))
+    except OperationFailure as erro:
+        # Degrada só este card: os outros quatro operadores continuam na tela.
+        return {
+            **base,
+            "erro": erro.details.get("errmsg", str(erro)) if erro.details else str(erro),
+            "descricao": "O servidor recusou o $geoNear nesta coleção; veja o erro e o ADR 0001.",
+            "contagem": None,
+            "amostra": [],
+        }
     bloco = saida[0] if saida else {}
     total = (bloco.get("total") or [{}])[0].get("n", 0)
     return {
-        "operador": "$geoNear",
-        "colecao": COLECAO_GEONEAR,
+        **base,
         "amostra_por_terminal": True,
         "descricao": (
             "Estágio de agregação: ordena por distância E devolve a distância calculada, ao "
             "contrário de $near/$nearSphere. Combina com outros estágios no mesmo pipeline "
-            "(aqui, $facet) — a troca é ter que ser o primeiro estágio."
+            "(aqui, $facet) — a troca é ter que ser o primeiro estágio. Com mais de um índice "
+            "2dsphere no campo, `key` diz qual usar."
         ),
-        "query": pipeline,
         "contagem": total,
         "amostra": bloco.get("amostra", []),
     }
@@ -863,7 +926,17 @@ def geo_search(pedido: SearchRequest):
         if termo
         else {"exists": {"path": "estabelecimento.nome"}}
     )
-    compound = {"must": [clausula], "filter": filtros}
+    compound: dict[str, Any] = {"must": [clausula], "filter": filtros}
+    if termo:
+        # Com termo, nomes iguais ("Padaria da Praça") empatam no texto e a ordem
+        # viraria arbitrária. O `near` do próprio Search entra como `should`:
+        # soma score para quem está mais perto do centro (pivot = metade do
+        # raio, onde o bônus cai pela metade), sem excluir ninguém do raio.
+        compound["should"] = [{"near": {
+            "path": "local",
+            "origin": {"type": "Point", "coordinates": [lng, lat]},
+            "pivot": max(pedido.raioKm * 500, 1),
+        }}]
 
     pipeline: list[dict] = [
         {"$search": {
@@ -937,7 +1010,7 @@ def geo_search(pedido: SearchRequest):
         "index": GEO_SEARCH_INDEX,
         "ancora": ancora,
         "centro": [lng, lat],
-        "ordenacao": "relevância textual" if termo else "distância do terminal",
+        "ordenacao": "relevância textual + proximidade (near)" if termo else "distância do terminal",
         "resultados": resultados,
         "meta": meta[0] if meta else {},
         "pipeline": pipeline,

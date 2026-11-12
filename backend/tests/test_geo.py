@@ -29,6 +29,13 @@ def _carregar_seed():
 seed_geo = _carregar_seed()
 
 
+@pytest.fixture(autouse=True)
+def _manifesto_isolado(monkeypatch):
+    """Nenhum teste offline toca o banco para ler o manifesto de plantados."""
+    monkeypatch.setattr(geo, "_manifesto_cache", None)
+    monkeypatch.setattr(geo, "_manifesto", lambda: {})
+
+
 # ── Demo A ──────────────────────────────────────────────────────────────────
 def test_resumo_plano_le_o_plano_aninhado_do_sbe():
     explain = {
@@ -274,17 +281,11 @@ def test_preflight_geo_e_read_only_e_exige_search_ready(monkeypatch):
                 "documentos": 40,
             }
 
-    class ColecaoGeonear:
-        def estimated_document_count(self):
-            return 40
-
-        def list_indexes(self):
-            return [{"name": "local_2dsphere_idx"}]
-
     class Banco:
         def __getitem__(self, nome):
-            assert nome in ("demo_metadata", seed_geo.COLECAO_GEONEAR)
-            return Metadata() if nome == "demo_metadata" else ColecaoGeonear()
+            # Só o metadata: a antiga cópia transacoes_geonear não é mais exigida.
+            assert nome == "demo_metadata"
+            return Metadata()
 
     class Colecao:
         def estimated_document_count(self):
@@ -402,9 +403,93 @@ def test_seletividade_por_cliente_nao_reporta_alertas_por_dia(monkeypatch):
     assert sel["janela_dias"] is None
 
 
+class _BancoMetadata:
+    def __init__(self, documento=None, erro=None):
+        self.documento, self.erro = documento, erro
+
+    def __getitem__(self, nome):
+        assert nome == "demo_metadata"
+        return self
+
+    def find_one(self, filtro):
+        assert filtro == {"_id": geo.ID_METADATA}
+        if self.erro:
+            raise self.erro
+        return self.documento
+
+
+def _manifesto_real(monkeypatch):
+    """Desfaz o stub autouse para exercitar a leitura de verdade."""
+    monkeypatch.setattr(geo, "_manifesto", _MANIFESTO_ORIGINAL)
+    monkeypatch.setattr(geo, "_manifesto_cache", None)
+
+
+_MANIFESTO_ORIGINAL = geo._manifesto
+
+
 def test_clientes_plantados_sem_arquivo_nao_quebra(monkeypatch, tmp_path):
+    _manifesto_real(monkeypatch)
+    monkeypatch.setattr(geo, "banco", _BancoMetadata(None))
     monkeypatch.setattr(geo, "ARQUIVO_FRAUDES", tmp_path / "inexistente.json")
     assert geo._clientes_plantados() == set()
+
+
+def test_manifesto_prefere_o_banco_ao_arquivo(monkeypatch, tmp_path):
+    _manifesto_real(monkeypatch)
+    arquivo = tmp_path / "fraud_seeds.json"
+    arquivo.write_text('{"clientes": ["CLI_ARQUIVO"], "limite_kmh": 900}', encoding="utf-8")
+    monkeypatch.setattr(geo, "ARQUIVO_FRAUDES", arquivo)
+    monkeypatch.setattr(geo, "banco", _BancoMetadata({"clientesPlantados": ["CLI_BANCO"], "limiteKmh": 900}))
+    assert geo._clientes_plantados() == {"CLI_BANCO"}
+    assert geo._manifesto()["origem"] == "banco"
+
+
+def test_manifesto_cai_no_arquivo_sem_banco(monkeypatch, tmp_path):
+    _manifesto_real(monkeypatch)
+    arquivo = tmp_path / "fraud_seeds.json"
+    arquivo.write_text('{"clientes": ["CLI_ARQUIVO"], "limite_kmh": 900}', encoding="utf-8")
+    monkeypatch.setattr(geo, "ARQUIVO_FRAUDES", arquivo)
+    monkeypatch.setattr(geo, "banco", _BancoMetadata(erro=RuntimeError("sem cluster")))
+    assert geo._clientes_plantados() == {"CLI_ARQUIVO"}
+    assert geo._manifesto()["origem"] == "arquivo"
+
+
+def test_impossible_travel_confere_o_gabarito_sintetico(monkeypatch):
+    """Plantados encontrados e emergentes vêm do ramo sem corte da tabela."""
+    capturado = {}
+
+    class FalsaColecao:
+        def aggregate(self, pipeline, **_kwargs):
+            capturado["facet"] = pipeline[-1]["$facet"]
+            return iter([{
+                "avaliados": [{"pares": 1000}],
+                "total_sinais": [{"total": 3}],
+                # A tabela mostra só um, mas o gabarito usa os três clientes.
+                "sinais": [{"clienteId": "CLI1", "kmh": 5000.0}],
+                "clientes_sinalizados": [{"ids": ["CLI1", "CLI2", "CLI9"]}],
+                "aprovados": [],
+            }])
+
+        def estimated_document_count(self):
+            return 1000
+
+    monkeypatch.setattr(geo, "colecao", FalsaColecao())
+    monkeypatch.setattr(geo, "_clientes_plantados", lambda: {"CLI1", "CLI2", "CLI3"})
+
+    r = geo.impossible_travel(limiteKmh=900, clienteId=None, limite=1)
+
+    gab = r["gabarito_sintetico"]
+    assert (gab["plantados"], gab["plantados_encontrados"], gab["emergentes"]) == (3, 2, 1)
+    assert "não é precisão nem recall" in gab["nota"]
+    assert r["resultados"][0]["plantado"] is True
+    ramo = capturado["facet"]["clientes_sinalizados"]
+    assert ramo[-1] == {"$group": {"_id": None, "ids": {"$addToSet": "$clienteId"}}}
+    assert not any("$limit" in etapa or "$sort" in etapa for etapa in ramo)
+
+
+def test_gabarito_nao_se_aplica_ao_recorte_por_cliente():
+    assert geo._gabarito({"CLI1"}, {"CLI1"}, "CLI1") is None
+    assert geo._gabarito({"CLI1"}, set(), None) is None
 
 
 def test_search_sem_termo_pergunta_o_entorno_e_ordena_por_distancia(monkeypatch):
@@ -442,7 +527,7 @@ def test_search_com_termo_mantem_fuzzy_e_ordena_por_relevancia(monkeypatch):
     resposta = geo.geo_search(geo.SearchRequest(termo="padaria", centro=[-46.63, -23.55]))
 
     assert resposta["pipeline"][0]["$search"]["compound"]["must"][0]["text"]["fuzzy"] == {"maxEdits": 1}
-    assert resposta["ordenacao"] == "relevância textual"
+    assert resposta["ordenacao"] == "relevância textual + proximidade (near)"
 
 
 def test_search_ancorado_na_compra_usa_a_coordenada_do_terminal(monkeypatch):
@@ -519,6 +604,8 @@ def test_seletividade_conta_antes_do_limite_da_tabela(monkeypatch, total, espera
 def test_geonear_amostra_terminais_sem_reduzir_total_de_transacoes(monkeypatch):
     class Colecao:
         def aggregate(self, pipeline):
+            # Coleção principal: `key` escolhe entre os índices 2dsphere de `local`.
+            assert pipeline[0]['$geoNear']['key'] == 'local'
             facet = pipeline[1]['$facet']
             assert facet['total'] == [{'$count': 'n'}]
             sample = facet['amostra']
@@ -526,8 +613,9 @@ def test_geonear_amostra_terminais_sem_reduzir_total_de_transacoes(monkeypatch):
             assert next(i for i, stage in enumerate(sample) if '$group' in stage) < next(i for i, stage in enumerate(sample) if '$limit' in stage)
             assert sample[2] == {'$sort': {'distanciaMetros': 1, 'dispositivo.id': 1}}
             return iter([{'total': [{'n': 20}], 'amostra': [{'endToEndId': 'E1', 'distanciaMetros': 250}]}])
-    monkeypatch.setattr(geo, 'colecao_geonear', Colecao())
+    monkeypatch.setattr(geo, 'colecao', Colecao())
     result = geo._geo_near_resultado({'type': 'Point', 'coordinates': [-46, -23]}, 50, 5)
+    assert result['colecao'] == geo.GEO_COLECAO
     assert result['contagem'] == 20
     assert result['amostra_por_terminal'] is True
     assert result['amostra'][0]['distanciaMetros'] == 250
@@ -578,3 +666,72 @@ def test_seed_aceita_banco_test_e_flag_explicita(monkeypatch):
     seed.assert_writable_db("geo_test")
     monkeypatch.setenv("ALLOW_DEMO_DB_WRITE", "1")
     seed.assert_writable_db("geo")
+
+
+def test_geonear_recusado_degrada_so_o_proprio_card(monkeypatch):
+    from pymongo.errors import OperationFailure
+
+    class Colecao:
+        def aggregate(self, _pipeline):
+            raise OperationFailure("x", code=27, details={"errmsg": "more than one 2dsphere index"})
+
+    monkeypatch.setattr(geo, "colecao", Colecao())
+    r = geo._geo_near_resultado({"type": "Point", "coordinates": [-46, -23]}, 50, 5)
+    assert r["erro"] == "more than one 2dsphere index"
+    assert r["contagem"] is None and r["amostra"] == []
+    assert r["query"][0]["$geoNear"]["key"] == "local"
+
+
+def test_dataset_atual_aceita_manifesto_no_banco(monkeypatch, tmp_path):
+    class Colecao:
+        def count_documents(self, _filtro):
+            return 40
+
+        def find_one(self, *_a):
+            return None
+
+    monkeypatch.setattr(seed_geo, "ARQUIVO_FRAUDES", tmp_path / "ausente.json")
+    meta = {"clientesPlantados": ["CLI1"], "datasetVersion": seed_geo.VERSAO_DATASET, "semente": seed_geo.SEMENTE}
+    assert seed_geo.dataset_atual(Colecao(), 40, meta)[0] is True
+    # Sem manifesto no banco nem arquivo, o dataset não é considerado atual.
+    assert seed_geo.dataset_atual(Colecao(), 40, {})[0] is False
+
+
+def test_registrar_dataset_grava_plantados_no_banco():
+    gravado = {}
+
+    class Metadata:
+        def replace_one(self, filtro, documento, upsert):
+            gravado.update(filtro=filtro, documento=documento, upsert=upsert)
+
+    seed_geo.registrar_dataset({"demo_metadata": Metadata()}, 40, ["CLI2", "CLI1"])
+    assert gravado["upsert"] is True
+    assert gravado["documento"]["clientesPlantados"] == ["CLI1", "CLI2"]
+    assert gravado["documento"]["limiteKmh"] == seed_geo.LIMITE_KMH_PLANTADO
+
+
+def test_seed_nao_reescreve_manifesto_versionado_em_banco_test():
+    assert seed_geo.banco_de_teste("geo_test") is True
+    assert seed_geo.banco_de_teste("geo") is False
+
+
+def test_search_com_termo_desempata_pela_proximidade_no_proprio_search(monkeypatch):
+    """Nomes iguais empatam no texto; o `near` do Search soma score por proximidade."""
+    capturado = []
+
+    class Colecao:
+        def aggregate(self, pipeline):
+            capturado.append(pipeline)
+            return iter([])
+
+    monkeypatch.setattr(geo, "_search_disponivel", lambda: (True, "ok"))
+    monkeypatch.setattr(geo, "colecao", Colecao())
+    geo.geo_search(geo.SearchRequest(termo="padaria", centro=[-46.6, -23.5], raioKm=20))
+    compound = capturado[0][0]["$search"]["compound"]
+    near = compound["should"][0]["near"]
+    assert near["path"] == "local" and near["pivot"] == 10_000
+    assert near["origin"]["coordinates"] == [-46.6, -23.5]
+    # Sem termo a ordem já é a distância calculada; não há `should`.
+    capturado.clear()
+    geo.geo_search(geo.SearchRequest(termo="", centro=[-46.6, -23.5], raioKm=20))
+    assert "should" not in capturado[0][0]["$search"]["compound"]

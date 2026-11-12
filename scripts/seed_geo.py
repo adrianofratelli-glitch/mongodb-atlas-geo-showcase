@@ -289,34 +289,42 @@ INDICES_OBRIGATORIOS = {
     "categoria_local_idx",
 }
 
-COLECAO_GEONEAR = "transacoes_geonear"
+# `$geoNear` roda na própria `transacoes` com `key: "local"` (ADR 0001). A
+# antiga cópia `transacoes_geonear` não é mais criada nem exigida; bancos que já
+# a têm podem apagá-la à mão quando quiserem.
+LIMITE_KMH_PLANTADO = 900
 
 
-def garantir_colecao_geonear(banco, colecao) -> None:
-    """Coleção dedicada a `$geoNear` — só um índice 2dsphere em `local`.
+def banco_de_teste(nome_banco: str) -> bool:
+    return nome_banco.endswith("_test")
 
-    `$geoNear` recusa rodar (mesmo com hint, testado em três formas) quando o
-    campo geo tem mais de um índice 2dsphere — e `transacoes` tem dois de
-    propósito: o puro (`local_2dsphere_idx`) e o composto da Demo A
-    (`cliente_status_local_idx`). Copiar via `$out` é mais barato que abrir
-    mão de um dos dois: mesmo dado, um índice a menos, sem tocar no gerador.
+
+def registrar_dataset(banco, alvo: int, plantados: list[str] | None = None) -> None:
+    """Grava a identidade do dataset e o manifesto de plantados no próprio banco.
+
+    O manifesto no banco é o que a API lê; assim um seed em `*_test` não precisa
+    reescrever `backend/data/fraud_seeds.json`, que é versionado.
     """
-    colecao.aggregate([{"$out": COLECAO_GEONEAR}])
-    banco[COLECAO_GEONEAR].create_index([("local", GEOSPHERE)], name="local_2dsphere_idx")
+    documento = {
+        "_id": ID_METADATA,
+        "datasetVersion": VERSAO_DATASET,
+        "semente": SEMENTE,
+        "documentos": alvo,
+        "atualizadoEm": datetime.now(timezone.utc),
+    }
+    if plantados:
+        documento["clientesPlantados"] = sorted(plantados)
+        documento["limiteKmh"] = LIMITE_KMH_PLANTADO
+    banco["demo_metadata"].replace_one({"_id": ID_METADATA}, documento, upsert=True)
 
 
-def registrar_dataset(banco, alvo: int) -> None:
-    banco["demo_metadata"].replace_one(
-        {"_id": ID_METADATA},
-        {
-            "_id": ID_METADATA,
-            "datasetVersion": VERSAO_DATASET,
-            "semente": SEMENTE,
-            "documentos": alvo,
-            "atualizadoEm": datetime.now(timezone.utc),
-        },
-        upsert=True,
-    )
+def ler_manifesto_arquivo() -> dict | None:
+    if not ARQUIVO_FRAUDES.exists():
+        return None
+    try:
+        return json.loads(ARQUIVO_FRAUDES.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
 
 
 def verificar_prontidao(banco, colecao, alvo: int) -> tuple[bool, list[str]]:
@@ -341,12 +349,6 @@ def verificar_prontidao(banco, colecao, alvo: int) -> tuple[bool, list[str]]:
     if ausentes:
         problemas.append("índices MongoDB ausentes: " + ", ".join(ausentes))
 
-    geonear = banco[COLECAO_GEONEAR]
-    if geonear.estimated_document_count() != alvo:
-        problemas.append(f"{COLECAO_GEONEAR} ausente ou com volume divergente (painel $geoNear)")
-    elif "local_2dsphere_idx" not in {i["name"] for i in geonear.list_indexes()}:
-        problemas.append(f"{COLECAO_GEONEAR} sem índice 2dsphere (painel $geoNear)")
-
     nome_search = os.getenv("GEO_SEARCH_INDEX", "idx_geo_estabelecimento").strip()
     try:
         search = list(colecao.list_search_indexes(nome_search))
@@ -359,8 +361,13 @@ def verificar_prontidao(banco, colecao, alvo: int) -> tuple[bool, list[str]]:
     return not problemas, problemas
 
 
-def dataset_atual(colecao, alvo: int) -> tuple[bool, str]:
-    """Valida a identidade do dataset sem depender de uma amostra otimista."""
+def dataset_atual(colecao, alvo: int, metadata: dict | None = None) -> tuple[bool, str]:
+    """Valida a identidade do dataset sem depender de uma amostra otimista.
+
+    O manifesto de plantados vale se estiver no `demo_metadata` do banco (seed
+    novo) ou no arquivo versionado (seed anterior), desde que da mesma versão e
+    semente.
+    """
     total = colecao.count_documents({})
     if total != alvo:
         return False, f"volume {total}, esperado {alvo}"
@@ -370,11 +377,17 @@ def dataset_atual(colecao, alvo: int) -> tuple[bool, str]:
     )
     if divergente is not None:
         return False, f"há documentos anteriores à versão {VERSAO_DATASET}"
+    metadata = metadata or {}
+    if (
+        metadata.get("clientesPlantados")
+        and metadata.get("datasetVersion") == VERSAO_DATASET
+        and metadata.get("semente") == SEMENTE
+    ):
+        return True, f"{total} documentos na versão {VERSAO_DATASET}"
     if not ARQUIVO_FRAUDES.exists():
         return False, f"manifesto ausente: {ARQUIVO_FRAUDES}"
-    try:
-        manifesto = json.loads(ARQUIVO_FRAUDES.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    manifesto = ler_manifesto_arquivo()
+    if manifesto is None:
         return False, f"manifesto inválido: {ARQUIVO_FRAUDES}"
     if manifesto.get("dataset_version") != VERSAO_DATASET or manifesto.get("semente") != SEMENTE:
         return False, "manifesto pertence a outra versão/semente"
@@ -387,7 +400,7 @@ def assert_writable_db(nome_banco: str) -> None:
     O banco da demo (`geo`) é recriado de propósito com
     `ALLOW_DEMO_DB_WRITE=1 python scripts/seed_geo.py ...`; `--check` é read-only e não passa aqui.
     """
-    if nome_banco.endswith("_test") or os.getenv("ALLOW_DEMO_DB_WRITE") == "1":
+    if banco_de_teste(nome_banco) or os.getenv("ALLOW_DEMO_DB_WRITE") == "1":
         return
     raise RuntimeError(
         f"'{nome_banco}' não é um banco *_test. Defina ALLOW_DEMO_DB_WRITE=1 para gravar nele de propósito."
@@ -445,20 +458,23 @@ def main() -> int:
             return 0
         for problema in problemas:
             print(f"❌ {problema}", file=sys.stderr)
-        print("rode ./scripts/prepare-demo.sh antes da apresentação", file=sys.stderr)
+        print(
+            "rode scripts/seed_geo.py --ensure e depois scripts/create_search_index_geo.sh",
+            file=sys.stderr,
+        )
         cliente.close()
         return 1
 
     if args.ensure:
-        atual, detalhe = dataset_atual(colecao, alvo)
+        metadata = banco["demo_metadata"].find_one({"_id": ID_METADATA}) or {}
+        atual, detalhe = dataset_atual(colecao, alvo, metadata)
         if atual:
             print(f"dataset Geo pronto: {detalhe}")
             print("validando índices idempotentes…")
             for nome in criar_indices(colecao):
                 print(f"  · {nome}")
-            garantir_colecao_geonear(banco, colecao)
-            print(f"  · {COLECAO_GEONEAR} (índice único, para $geoNear)")
-            registrar_dataset(banco, alvo)
+            plantados = metadata.get("clientesPlantados") or (ler_manifesto_arquivo() or {}).get("clientes")
+            registrar_dataset(banco, alvo, plantados)
             cliente.close()
             return 0
         print(f"dataset Geo divergente ({detalhe}); recriando a coleção dedicada")
@@ -491,36 +507,37 @@ def main() -> int:
             inseridos += erro.details.get("nInserted", 0)
         print(f"  {min(i + 5_000, len(documentos))}/{len(documentos)}", end="\r")
 
-    DIR_DADOS.mkdir(parents=True, exist_ok=True)
-    ARQUIVO_FRAUDES.write_text(
-        json.dumps(
-            {
-                "gerado_em": datetime.now(timezone.utc).isoformat(),
-                "semente": SEMENTE,
-                "dataset_version": VERSAO_DATASET,
-                "limite_kmh": 900,
-                "clientes": plantados,
-            },
-            ensure_ascii=False,
-            indent=2,
+    # O arquivo versionado só acompanha o banco da demo; num *_test o manifesto
+    # fica apenas em demo_metadata (a API lê de lá) e a árvore git não muda.
+    if not banco_de_teste(nome_banco):
+        DIR_DADOS.mkdir(parents=True, exist_ok=True)
+        ARQUIVO_FRAUDES.write_text(
+            json.dumps(
+                {
+                    "gerado_em": datetime.now(timezone.utc).isoformat(),
+                    "semente": SEMENTE,
+                    "dataset_version": VERSAO_DATASET,
+                    "limite_kmh": LIMITE_KMH_PLANTADO,
+                    "clientes": plantados,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
         )
-        + "\n",
-        encoding="utf-8",
-    )
 
     total = colecao.count_documents({})
     print(f"\ninseridos nesta execução: {inseridos}")
     print(f"total em {banco.name}.transacoes: {total} (alvo {alvo})")
-    print(f"clientes com par de fraude plantado: {len(plantados)} → {ARQUIVO_FRAUDES}")
+    destino = f"{banco.name}.demo_metadata" + ("" if banco_de_teste(nome_banco) else f" e {ARQUIVO_FRAUDES}")
+    print(f"clientes com par de fraude plantado: {len(plantados)} → {destino}")
     if total != alvo:
         print("erro: total diferente do alvo — rode com --drop para recriar do zero", file=sys.stderr)
         cliente.close()
         return 1
 
-    print(f"criando {COLECAO_GEONEAR} (índice único, para $geoNear)…")
-    garantir_colecao_geonear(banco, colecao)
-
-    registrar_dataset(banco, alvo)
+    registrar_dataset(banco, alvo, plantados)
     cliente.close()
     return 0
 

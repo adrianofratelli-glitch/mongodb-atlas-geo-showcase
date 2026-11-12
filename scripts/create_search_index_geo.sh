@@ -19,9 +19,12 @@ fi
 le_env() { { grep -E "^$1=" "$ENV_FILE" || true; } | head -n1 | cut -d= -f2- | sed -e 's/^["'\'']//' -e 's/["'\'']$//' -e 's/\r$//'; }
 
 MONGO_URI="$(le_env MONGO_URI)"
-GEO_DB="$(le_env GEO_DB)"
+# Variável de ambiente vence o arquivo: permite criar o índice num banco *_test
+# (GEO_DB=geo_test ./scripts/create_search_index_geo.sh) sem editar o .env.
+GEO_DB="${GEO_DB:-$(le_env GEO_DB)}"
 GEO_DB="${GEO_DB:-geo}"
-INDICE="${GEO_SEARCH_INDEX:-idx_geo_estabelecimento}"
+INDICE="${GEO_SEARCH_INDEX:-$(le_env GEO_SEARCH_INDEX)}"
+INDICE="${INDICE:-idx_geo_estabelecimento}"
 TIMEOUT_SEGUNDOS="${GEO_SEARCH_READY_TIMEOUT_SECONDS:-$(le_env GEO_SEARCH_READY_TIMEOUT_SECONDS)}"
 TIMEOUT_SEGUNDOS="${TIMEOUT_SEGUNDOS:-600}"
 
