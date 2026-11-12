@@ -8,22 +8,26 @@ de antifraude e sem mapa bonito por si só. Não é motor antifraude, não tem
 rótulo de fraude confirmada, não calcula rota por ruas. **Sem LLM.** UI,
 docstrings e mensagens de erro em pt-BR por design (público brasileiro).
 
-Dois painéis visíveis no frontend, mais um painel de busca (Atlas Search) que
-existe na API mas está fora do fluxo padrão da tela:
+Três painéis visíveis no frontend:
 
 1. **Investigação retrospectiva** (`impossible-travel`) — pares de compras
    presenciais do mesmo cliente distantes demais para o tempo decorrido entre
    elas. `$setWindowFields` particiona por cliente, `$shift` traz a compra
    anterior, e a distância sai de haversine em operadores MQL puros — tudo
-   dentro do cluster, nenhum documento volta para cálculo na aplicação.
+   dentro do cluster, nenhum documento volta para cálculo na aplicação. A
+   resposta inclui o gabarito do gerador (`gabarito_sintetico`): quantos pares
+   plantados pelo seed a regra encontra no limite escolhido e quantos
+   sinalizados não foram plantados. É cobertura do gerador, não precisão de
+   fraude.
 2. **Operadores de consulta geoespacial** (`operadores`) — os cinco
    operadores/estágios geoespaciais do MongoDB lado a lado sobre a mesma
    geometria: `$geoWithin`, `$geoIntersects`, `$near`, `$nearSphere`,
    `$geoNear`.
-3. **Busca por relevância + geo** (`search`, `explain-compare` fora do fluxo
-   visível padrão) — `$search` combinando texto, filtro geoespacial e
-   facetas; e comparação de planos de execução (`explain`) sob dois índices
-   diferentes.
+3. **Índice certo e busca com geo** (`explain-compare`, `search`) —
+   o mesmo `$geoWithin` medido sob dois índices (`explain` com
+   `executionStats`) e um `$search` que combina texto fuzzy, `near` (score por
+   proximidade), raio `geoWithin` e facetas via `$searchMeta`. Componente
+   `frontend/src/components/PainelIndiceBusca.jsx` (ADR 0002).
 
 ## Stack
 
@@ -39,8 +43,9 @@ React 19 + Vite (frontend/, :5184) --fetch--> FastAPI (backend/main.py, :8184) -
   `backend/routers/geo.py` montam pipeline/filtro e chamam o driver
   diretamente.
 - **Dados**: MongoDB Atlas, banco `geo` (configurável via `GEO_DB`), coleção
-  principal `transacoes`, mais uma coleção espelho `transacoes_geonear` só
-  para o operador `$geoNear` (ver "Decisão: por que duas coleções").
+  `transacoes` e `demo_metadata` (identidade do dataset e lista de clientes
+  plantados). `$geoNear` roda na própria `transacoes` com `key: "local"`
+  (ver "Decisão: `$geoNear` com `key`").
 - **Dataset**: sintético, 150 mil transações de cartão presencial, gerado por
   `scripts/seed_geo.py`, clusterizadas em torno de 40 municípios reais do
   Brasil.
@@ -54,7 +59,9 @@ React 19 + Vite (frontend/, :5184) --fetch--> FastAPI (backend/main.py, :8184) -
 | `backend/database.py` | Instancia o `MongoClient` único (`connect=False`, lazy) e expõe `readiness()` para o healthcheck. |
 | `backend/security.py` | `MutationGuardMiddleware` (bloqueia mutação fora de loopback sem `DEMO_ADMIN_TOKEN`) e `ApiHardeningMiddleware` (teto de tamanho de corpo, headers `nosniff`/`DENY`/`no-referrer`/`no-store`). |
 | `backend/routers/geo.py` | Todo o domínio da PoV: os 3 painéis + `status`, `municipios`, `sinais-ao-vivo` (código herdado, não usado pelo frontend deste repo). |
-| `backend/tests/test_geo.py` | 34 testes unitários, Mongo stubado via monkeypatch — roda sem cluster ao vivo. |
+| `backend/tests/test_geo.py` | 45 testes unitários, Mongo stubado via monkeypatch — roda sem cluster ao vivo. |
+| `backend/tests_live/test_live_geo.py` | 6 testes contra um banco `*_test` real (só com `GEO_LIVE=1`): IXSCAN, `$geoNear` igual ao círculo, 40/40 plantados, raio do `$search`, rotas. |
+| `scripts/bench_geo.py` | Latência por fluxo (parede p50/p95 e tempo no servidor via explain), somente leitura. |
 
 ## Componentes do frontend
 
@@ -85,9 +92,10 @@ React 19 + Vite (frontend/, :5184) --fetch--> FastAPI (backend/main.py, :8184) -
    de 250ms, `AbortController` cancela chamada em voo) → backend roda os 5
    operadores/estágios em paralelo sobre a mesma geometria → resposta traz
    query e amostra de cada um → mapa de tiles + `QueryBlock`.
-4. Painel de busca (fora do fluxo da tela, só via API): `POST /geo/search` →
-   `$search` (Atlas Search) com filtro `geoWithin` + texto opcional +
-   facetas via `$searchMeta`.
+4. Painel 03: botão "Comparar planos" → `POST /geo/explain-compare` (dois
+   `explain` com `hint`); botão "Buscar" → `POST /geo/search` → `$search`
+   (Atlas Search) com filtro `geoWithin`, texto opcional com `should: near`
+   e facetas via `$searchMeta`.
 
 Nenhum cálculo geoespacial roda no frontend nem na camada de aplicação Python
 — tudo que aparece na tela é o resultado de uma query/pipeline que rodou no
@@ -95,18 +103,19 @@ Atlas. Ver `docs/briefing/queries.md` para o detalhe de cada uma.
 
 ## Decisões de arquitetura (o "porquê")
 
-- **Por que duas coleções (`transacoes` e `transacoes_geonear`)?**
-  `$geoNear` recusa rodar quando o campo geo tem mais de um índice 2dsphere,
-  e não existe `hint` que resolva isso — testado em três formas (hint no
-  `aggregate()`, `key` dentro do estágio, hint cru via `db.command`), todas
-  recusadas com `code 27 IndexNotFound`. Como `transacoes` precisa de dois
-  índices 2dsphere de propósito (`local_2dsphere_idx` puro e
-  `cliente_status_local_idx` composto, para o comparativo de explain da Demo
-  A), a solução foi copiar os dados via `$out` para `transacoes_geonear`, que
-  tem um único índice 2dsphere — mantida pelo próprio `scripts/seed_geo.py`
-  em ambos os caminhos (`--ensure` e geração completa), sem reescrever o
-  gerador principal. Ver `backend/routers/geo.py:49-54` e
-  `scripts/seed_geo.py:292-302`.
+- **Decisão: `$geoNear` com `key`.** `transacoes` tem três índices 2dsphere
+  em `local` de propósito (puro, composto da Demo A, categoria + local). Sem
+  `key`, o servidor recusa o `$geoNear`. Com `key: "local"`, ele roda na
+  própria coleção: no 9.0.7 dá a mesma contagem e os mesmos documentos
+  examinados que a antiga cópia `transacoes_geonear`, que foi aposentada. Se o
+  servidor recusar, só o card do `$geoNear` degrada. Ver
+  `docs/adr/0001-geonear-na-colecao-principal-com-key.md` e
+  `backend/routers/geo.py::_geo_near_resultado`.
+
+- **Decisão: manifesto de plantados no banco.** O seed grava a lista em
+  `demo_metadata.clientesPlantados`, e a API lê de lá (`geo.py::_manifesto`),
+  com fallback para `backend/data/fraud_seeds.json`. Seed em banco `*_test`
+  não reescreve o arquivo versionado.
 
 - **Por que sem biblioteca de mapa externa?** `MapaBrasil.jsx` usa malha
   estadual do IBGE embarcada localmente (`frontend/src/data/brasil-uf.js`,
@@ -172,6 +181,8 @@ dos tiles do OpenStreetMap).
 pytest                          # backend/tests, Mongo stubado — sem cluster ao vivo
 ruff check backend
 cd frontend && node --test tests/*.test.mjs
+GEO_LIVE=1 GEO_DB=geo_test python -m pytest backend/tests_live   # contra banco *_test semeado
+GEO_DB=geo_test python scripts/bench_geo.py --runs 7             # latência (somente leitura)
 ```
 
 Antes de qualquer demo: `curl http://localhost:8184/preflight` — valida

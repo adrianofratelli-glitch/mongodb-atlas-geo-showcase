@@ -16,15 +16,22 @@ python scripts/seed_geo.py --ensure   # mantém se estiver atual; recria se esti
 ./scripts/create_search_index_geo.sh  # cria/atualiza e espera até READY
 ```
 
-O script também mantém `geo.transacoes_geonear` — uma cópia via `$out` com um
-único índice `2dsphere`, dedicada ao operador `$geoNear` (que recusa rodar
-quando o campo tem mais de um índice 2dsphere, e `transacoes` tem dois de
-propósito). Os dois caminhos (`--drop` e `--ensure`) mantêm as duas coleções
-sincronizadas; nenhum script separado é necessário.
+Para testes, use um banco `*_test` (dispensa `ALLOW_DEMO_DB_WRITE` e não
+reescreve `backend/data/fraud_seeds.json`; a lista de plantados fica em
+`demo_metadata`). A variável de ambiente vence o `.env` nos dois scripts:
+
+```bash
+GEO_DB=geo_test python scripts/seed_geo.py
+GEO_DB=geo_test ./scripts/create_search_index_geo.sh
+```
+
+`$geoNear` roda na própria `transacoes` com `key: "local"`; a antiga cópia
+`transacoes_geonear` não é mais criada nem exigida pelo `--check` (ADR 0001).
+Num banco que ainda a tenha, apagá-la é opcional e manual.
 
 ⚠️ **O `--drop` apaga a coleção, e o índice do Atlas Search vai junto.**
 Sempre rode `./scripts/create_search_index_geo.sh` depois, ou o painel de
-busca (fora do fluxo visível padrão, ver README) abre como `nao_configurado`.
+busca (painel 03, bloco B) abre como `nao_configurado`.
 
 O gerador usa uma semente fixa e carrega uma versão de dataset, então todo
 `endToEndId` é estável e o índice único rejeita reinserções: rodar o seed duas
@@ -34,7 +41,8 @@ coordenadas uniformemente aleatórias dentro do bounding box do país parecem
 obviamente falsas num projetor.
 
 **Dataset v5 — os casos plantados.** Quarenta clientes carregam um par
-plantado de viagem impossível, listados em `backend/data/fraud_seeds.json`.
+plantado de viagem impossível, listados em `demo_metadata.clientesPlantados`
+e, no banco da demo, também em `backend/data/fraud_seeds.json`.
 Cada par deriva seu intervalo de uma **velocidade alvo** (uniforme entre 1.100
 e 9.000 km/h) aplicada à distância real entre as duas cidades — nunca o
 contrário. Sortear minutos diretamente produzia 16.000–42.000 km/h, vinte
@@ -64,9 +72,8 @@ origem, qualidade), de modo que o sinal nunca pareça um fato sem origem.
 
 ## O índice do Atlas Search
 
-O painel de busca por relevância textual (fora do fluxo visível padrão do
-frontend, disponível via `POST /geo/search`) precisa de um índice do Atlas
-Search. Crie com:
+O painel de busca (painel 03, bloco B, `POST /geo/search`) precisa de um
+índice do Atlas Search. Crie com:
 
 ```bash
 ./scripts/create_search_index_geo.sh

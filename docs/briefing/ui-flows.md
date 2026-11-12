@@ -2,7 +2,7 @@
 
 > Números de linha podem ficar defasados após mudanças: a fonte atualizada é [MAPA_DO_CODIGO.md](../MAPA_DO_CODIGO.md).
 
-Sem screenshots no repositório (não há `*.png`/`*.jpg` versionados). Este
+Screenshots em `docs/screenshots/` (01 a 04, usados no README). Este
 documento mapeia telas, componentes e fluxo de interação a partir do código
 em `frontend/src/`.
 
@@ -10,7 +10,8 @@ em `frontend/src/`.
 
 `frontend/src/App.jsx` é a casca do app: sem seletor de módulo nem
 roteamento por hash, porque esta PoV extraída só tem um módulo (Geo). Toda a
-tela vive em `frontend/src/pages/Geo.jsx` (436 linhas).
+tela vive em `frontend/src/pages/Geo.jsx`, mais o painel 03 em
+`frontend/src/components/PainelIndiceBusca.jsx`.
 
 Barra de status no topo (renderizada se `GET /geo/status` respondeu):
 badges com total de transações, DB.coleção, nº de índices, aviso "dataset
@@ -61,6 +62,12 @@ destino, com rótulo de km/minutos). Abaixo do mapa: IDs de dispositivo
 Botão "Investigar este cliente" refaz a consulta filtrada pelo cliente da
 linha selecionada.
 
+**Gabarito do gerador** (só na coleção inteira): "N de 40 pares plantados
+encontrados acima de X km/h · M sinalizado(s) não plantado(s)", com nota de
+que mede cobertura do gerador sintético, não precisão/recall de fraude. Ao
+vivo no `geo_test`: 40/40 de 300 a 1.200 km/h, 37/40 a 2.000 km/h e 1
+emergente a 300 km/h.
+
 **Rodapé**: nota de seletividade + aviso de que o percentual é do dataset
 sintético, não de portfólio real; e `QueryBlock` colapsável com o pipeline
 completo (JSON formatado, syntax highlight).
@@ -102,12 +109,34 @@ linhas 56-72) — evita disparo de requisição a cada tecla/troca rápida.
   aplicável) e a amostra de pontos.
 - `QueryBlock` aberto por padrão (`defaultOpen`) com a query/filtro exato
   executado.
+- Se o servidor recusar o `$geoNear`, o card mostra um banner com o erro e o
+  badge "indisponível"; os outros operadores seguem normais.
 
-**Rodapé da tela** (`Limites`, linhas 429-433): componente `<details>`
-colapsável "Escopo desta demonstração" — 3 itens fixos, verificáveis:
+---
+
+## Seção 03 · Índice certo e busca com geo
+
+`frontend/src/components/PainelIndiceBusca.jsx` (ADR 0002). Select de centro
+próprio (municípios) e dois blocos:
+
+- **A · Mesmo `$geoWithin`, dois índices**: selects de cliente (só
+  plantados) e raio (50/500/2.000 km), botão "Comparar planos" → `POST
+  /geo/explain-compare`. Tabela com índice, estágios, chaves examinadas,
+  devolvidos e ms de cada plano, e a frase "o 2dsphere puro examinou N× mais
+  chaves" (medido, com ressalva de cache). Ao vivo: 64 vs 128.153 chaves
+  para os mesmos 63 documentos.
+- **B · Atlas Search: texto + raio + facetas**: selects de termo (vazio,
+  padaria, farmácia, posto, restaurante, barbearia) e raio (5/25/50 km),
+  botão "Buscar" → `POST /geo/search`. Badges de ordenação, total no filtro
+  e facetas de categoria/UF; lista com nome, município, km do centro e score;
+  `QueryBlock` do pipeline `$search` e do `$searchMeta`. Sem índice Search, o
+  banner "Índice de busca ausente" aparece e o bloco A continua funcionando.
+
+**Rodapé da tela** (`Limites`): componente `<details>`
+colapsável "Escopo desta demonstração" — itens fixos, verificáveis:
 rotas são sintéticas sem persistência; investigação não calcula trajeto por
-ruas nem aprova compra; consultas de proximidade usam 2dsphere e `$geoNear`
-usa a coleção espelho. Ver comentário em `Limites.jsx` sobre por que a regra
+ruas nem aprova compra; `$geoNear` indica o índice com `key: "local"`; o
+gabarito do painel 01 não mede fraude real. Ver comentário em `Limites.jsx` sobre por que a regra
 é "limite inventado é pior que limite omitido".
 
 ---
@@ -120,17 +149,14 @@ usa a coleção espelho. Ver comentário em `Limites.jsx` sobre por que a regra
 | `MapaConsulta.jsx` | Mapa com tiles OpenStreetMap, zoom/pan, usado na Seção 02. Degrada (`failed` state) se os tiles não carregarem — continua mostrando pontos/polígono sem fundo de mapa. |
 | `ComparacaoRotas.jsx` | Chama `GET /geo/rotas-comparar` e desenha as 3 rotas sintéticas classificadas por `$geoWithin`/`$geoIntersects`. |
 | `ComparacaoOperadores.jsx` | Texto didático estático por operador (não chama API). |
-| `QueryBlock.jsx` | `<details>`-like colapsável com `react-syntax-highlighter` (tema `atomOneDark`) — usado em ambas as seções para mostrar a query/pipeline JSON real. |
+| `QueryBlock.jsx` | `<details>`-like colapsável com `react-syntax-highlighter` (tema `atomOneDark`) — usado nas três seções para mostrar a query/pipeline JSON real. |
+| `PainelIndiceBusca.jsx` | Seção 03: explain medido de dois índices e busca `$search` com texto, `near`, raio e facetas. |
 | `Limites.jsx` | Bloco de limitações declaradas, padrão reaproveitado do portfólio maior (módulo 08 original). |
 | `geoMapMath.mjs` | Funções puras de projeção (`project`, `fitView`, `circleRing`, `metersPerPixel`) usadas por `MapaConsulta`. |
 | `useApi.js`, `usePolling.js` | Hooks genéricos de fetch, copiados verbatim do repositório de origem. |
 
-## Painel de busca (Atlas Search) — não exposto na UI
+## Endpoint herdado sem tela
 
-`POST /geo/search` e `POST /geo/explain-compare` estão implementados e
-testados no backend, mas **não há tela para eles** neste frontend — ficam
-disponíveis só via API para quem quiser explorar `$search` + facetas ou o
-comparativo de planos de execução manualmente (ex.: via curl/Postman ou
-Swagger em `/docs`, se habilitado). O endpoint herdado `GET /geo/sinais-ao-vivo` (lê `geo.sinais_ao_vivo`, populada por um processor externo) também não é chamado por nenhuma tela. Se o gestor perguntar "onde está a tela
-de busca", a resposta é: não existe, é intencional (README, seção "Armadilhas
-técnicas").
+`GET /geo/sinais-ao-vivo` (lê `geo.sinais_ao_vivo`, populada por um processor
+que só existe no repositório de origem) não é chamado por nenhuma tela e
+degrada para `indisponivel`.

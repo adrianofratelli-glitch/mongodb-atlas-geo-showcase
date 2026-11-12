@@ -7,8 +7,9 @@ Tudo abaixo foi extraído do código real (`backend/routers/geo.py`,
 `scripts/seed_geo.py`, `scripts/create_search_index_geo.sh`). Nenhum exemplo
 usa dado real do cluster — coordenadas e IDs são ilustrativos.
 
-Banco: `geo` (`GEO_DB`). Coleções: `transacoes` (principal),
-`transacoes_geonear` (espelho só para `$geoNear`, ver arquitetura).
+Banco: `geo` (`GEO_DB`). Coleções: `transacoes` (principal) e
+`demo_metadata` (identidade do dataset e clientes plantados). A antiga cópia
+`transacoes_geonear` foi aposentada (ADR 0001).
 
 ---
 
@@ -26,11 +27,10 @@ nome explícito (a lista completa que `/geo/status` também expõe):
 | `uf_ts_idx` | `uf` asc, `ts` desc | composto | Suporte a consultas por UF/tempo (não exercitado diretamente pelos endpoints atuais, mas mantido como índice de suporte geral). |
 | `categoria_local_idx` | `estabelecimento.categoria` asc, `local` **2dsphere** | composto | Suporte a filtro por categoria combinado com geo (usado no painel de busca, `POST /geo/search`, categoria como faceta/filtro). |
 
-Na coleção espelho `transacoes_geonear` (`scripts/seed_geo.py:292-302`):
-
-| Nome | Campos | Tipo | Por que existe |
-|---|---|---|---|
-| `local_2dsphere_idx` | `local` **2dsphere** | único índice geo desta coleção | `$geoNear` recusa rodar quando o campo tem mais de um índice 2dsphere, e não há `hint` que resolva (testado em 3 formas, todas com `code 27 IndexNotFound`). Coleção populada via `{"$out": "transacoes_geonear"}`, mantida pelo próprio seed em `--ensure` e na geração completa. |
+Três índices 2dsphere em `local` convivem de propósito. `$geoNear` só os
+aceita com `key: "local"`; sem `key`, o servidor recusa ("more than one
+2dsphere index"). Com `key`, o planner usa `local_2dsphere_idx` (medido no
+9.0.7; ver `docs/adr/0001-geonear-na-colecao-principal-com-key.md`).
 
 **Armadilha registrada**: círculo (`$near`/`$nearSphere`/`$geoNear`, via
 `$maxDistance` esférico) e quadrado (`$geoWithin`/`$geoIntersects`, via
@@ -137,6 +137,8 @@ db.transacoes.aggregate([
         { $project: { /* clienteId, endToEndId, km, minutos, kmh, de, para, ts_ant, ts */ } }
       ],
       total_sinais: [ /* mesmos estágios até antes do $sort */, { $count: "total" } ],
+      // gabarito do gerador: clientes sinalizados, sem o corte da tabela
+      clientes_sinalizados: [ /* mesmos estágios até antes do $sort */, { $group: { _id: null, ids: { $addToSet: "$clienteId" } } } ],
       aprovados: [
         { $match: { minutos: { $gt: 0 } } },
         { $sample: { size: 200 } },
@@ -177,7 +179,9 @@ custava 4 passadas completas sobre o resultado da janela (medido em
 duas compras presenciais do mesmo cliente distantes demais para o tempo
 entre elas — inteiramente no cluster, sem trazer histórico para a aplicação.
 Índice de suporte: `cliente_ts_idx`. `$facet` evita rodar o
-`$setWindowFields` (caro) duas vezes. Seletividade (pares avaliados,
+`$setWindowFields` (caro) duas vezes. O ramo `clientes_sinalizados` alimenta
+`gabarito_sintetico` (`geo.py::_gabarito`): plantados encontrados / plantados
+e emergentes. É cobertura do gerador, não precisão/recall de fraude. Seletividade (pares avaliados,
 sinalizados, taxa%, alertas/dia) é contada **antes** do corte geométrico —
 resposta à pergunta real de um time de risco ("de quantas oportunidades"),
 não só "quantos sinais saíram". Isto é sinal de risco, **nunca** decisão de
@@ -188,8 +192,7 @@ fraude — não há rótulo de fraude confirmada no dataset.
 ## Demo B2 — `POST /geo/operadores`
 
 **Onde**: `backend/routers/geo.py:608-741`. Geometria auxiliar em
-`_poligono_quadrado` (linha 572-605), `$geoNear` isolado em
-`_geo_near_resultado` (linha 621-670).
+`_poligono_quadrado`, `$geoNear` isolado em `geo.py::_geo_near_resultado`.
 
 **O que faz**: roda os 5 operadores/estágios geoespaciais do MongoDB lado a
 lado sobre a mesma geometria (quadrado para área, ponto para proximidade):
@@ -208,8 +211,8 @@ db.transacoes.find({ local: { $near: { $geometry: <Point>, $maxDistance: raioKm*
 db.transacoes.find({ local: { $nearSphere: { $geometry: <Point>, $maxDistance: raioKm*1000 } } })
 
 // $geoNear — estágio de agregação, primeiro estágio obrigatório, devolve distância
-db.transacoes_geonear.aggregate([
-  { $geoNear: { near: <Point>, distanceField: "distanciaMetros", maxDistance: raioKm*1000, spherical: true } },
+db.transacoes.aggregate([
+  { $geoNear: { near: <Point>, key: "local", distanceField: "distanciaMetros", maxDistance: raioKm*1000, spherical: true } },
   { $facet: {
       amostra: [
         { $group: { _id: "$dispositivo.id", documento: { $first: "$$ROOT" } } },
@@ -227,8 +230,9 @@ db.transacoes_geonear.aggregate([
 operador. `$near`/`$nearSphere` são operadores de `find()` e não funcionam
 dentro de `$match` de um pipeline de agregação (restrição real do MongoDB),
 por isso não têm `count_documents`. `$geoNear` resolve essa lacuna (roda em
-pipeline, devolve distância), mas precisa ser o primeiro estágio — por isso
-roda contra `transacoes_geonear` (índice único, ver seção de índices).
+pipeline, devolve distância), mas precisa ser o primeiro estágio e, com mais
+de um índice 2dsphere no campo, precisa de `key`. Se o servidor recusar, o
+card do `$geoNear` mostra o erro e os outros quatro continuam.
 `$geoIntersects` sobre dado tipo `Point` coincide com `$geoWithin` neste
 dataset — a diferença só apareceria com `LineString`/`Polygon` armazenados
 (exercitado à parte no endpoint de rotas, abaixo).
@@ -269,9 +273,10 @@ evita precisar persistir rotas de exemplo no banco.
 **Onde**: `backend/routers/geo.py:789-945`. Âncora da investigação em
 `_ancora_da_contestacao` (linha 804-819).
 
-**O que faz**: um único `$search` combinando relevância textual (fuzzy,
-`lucene.portuguese`), filtro geoespacial (`geoWithin` circular) e filtro de
-categoria — mais `$searchMeta` para facetas por categoria/UF:
+**O que faz** (painel 03, bloco B): um único `$search` combinando relevância
+textual (fuzzy, `lucene.portuguese`), proximidade (`near` como `should`, só
+com termo), filtro geoespacial (`geoWithin` circular) e filtro de categoria —
+mais `$searchMeta` para facetas por categoria/UF:
 
 ```js
 db.transacoes.aggregate([
@@ -283,6 +288,10 @@ db.transacoes.aggregate([
           { text: { query: "<termo>", path: "estabelecimento.nome", fuzzy: { maxEdits: 1 } } }
           // sem termo: só exige que o campo exista (compound precisa de ≥1 cláusula pontuável)
           // { exists: { path: "estabelecimento.nome" } }
+        ],
+        // só com termo: nomes iguais empatam no texto; near desempata por proximidade
+        should: [
+          { near: { path: "local", origin: { type: "Point", coordinates: [lng, lat] }, pivot: raioKm * 500 } }
         ],
         filter: [
           { geoWithin: { path: "local", circle: { center: { type: "Point", coordinates: [lng, lat] }, radius: raioKm * 1000 } } }
@@ -356,5 +365,7 @@ reais do dataset e um ponto representativo para centrar o mapa.
 ## `GET /geo/status`
 
 **Onde**: `backend/routers/geo.py:258-287`. Usa `estimated_document_count()`
-e `index_information()` — sem agregação, é metadado de coleção/índice. Lê
-`backend/data/fraud_seeds.json` para listar clientes com par plantado.
+e `index_information()` — sem agregação, é metadado de coleção/índice. A
+lista de clientes com par plantado vem de `geo.py::_manifesto`:
+`demo_metadata.clientesPlantados` (`find_one({_id: "geo_seed"})`), com
+fallback para `backend/data/fraud_seeds.json`.

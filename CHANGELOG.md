@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `$geoNear` roda na própria `transacoes` com `key: "local"` (medido no 9.0.7: mesmo resultado da cópia); `transacoes_geonear` aposentada, card degrada sozinho se o servidor recusar (ADR 0001).
+- Painel 03 na tela: explain medido de dois índices (64 vs 128.153 chaves) e `$search` com texto, `near`, raio e facetas (ADR 0002).
+- Investigação confere a regra contra o gabarito do gerador (40/40 plantados a 900 km/h), sem chamar isso de precisão/recall.
+- Manifesto de plantados em `demo_metadata`; seed em `*_test` não reescreve `fraud_seeds.json`. `create_search_index_geo.sh` aceita `GEO_DB` do ambiente.
+- Testes live (`backend/tests_live`, `GEO_LIVE=1`) e `scripts/bench_geo.py` com latência medida no README.
+
 - Atualiza dependências compatíveis e pisos de segurança; alinha metadados de versão entre aplicação e frontend.
 - Reserva backend 8184, corrige CORS para 5184 e completa o índice do briefing.
 
