@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import { useApi } from '../hooks/useApi'
 import QueryBlock from './QueryBlock'
+import CasoNegocio from './CasoNegocio'
 
 // Painel 03 — a prova do índice e a busca com geo, que viviam só na API.
 // Nada aqui é texto livre: termo, raio e cliente são seleções que existem no
@@ -68,6 +69,10 @@ export default function PainelIndiceBusca({ municipios, clientes }) {
       <h2 style={{ fontSize: 18, marginBottom: 6 }}>
         O plano medido no cluster, e texto + raio + facetas numa consulta só
       </h2>
+      <CasoNegocio casos={[
+        { setor: 'Engenharia e custo', pergunta: 'a consulta por cliente + raio usa o índice certo? Chaves examinadas viram CPU e tier do cluster.' },
+        { setor: 'Fraude e varejo', pergunta: 'o que existe em volta da compra contestada: estabelecimentos por nome, raio e categoria, numa consulta só.' },
+      ]} />
       <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 14 }}>
         Os números abaixo vêm do <code>explain("executionStats")</code> e do <code>$search</code> executados agora,
         não de um texto escrito antes da demo.

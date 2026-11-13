@@ -782,3 +782,19 @@ button:focus-visible, a:focus-visible, input:focus-visible {
 .query-map-popup-list span { display: block; margin-top: 4px; overflow-wrap: anywhere; font: 10px var(--font-mono); color: #b5d2d5; }
 
 .query-map-unavailable { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 20px; box-sizing: border-box; text-align: center; background: #082832; color: #e9ffff; }
+
+/* Caso de negócio de cada painel (perguntas típicas por setor, não clientes). */
+.geo-caso { margin: 0 0 14px; padding: 10px 13px; border-radius: 10px;
+  border: 1px solid var(--border-subtle); background: rgba(255,255,255,.02); }
+.geo-caso small { display: block; margin-bottom: 4px; font-size: 10px; color: var(--text-secondary);
+  font-family: var(--font-mono); text-transform: uppercase; letter-spacing: .06em; }
+.geo-caso ul { margin: 0; padding-left: 16px; font-size: 12.5px; line-height: 1.6; color: var(--text-secondary); }
+.geo-caso strong { color: var(--text-primary); font-weight: 600; }
+
+/* Painel 04: dois motores lado a lado. */
+.geo-motores { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 12px; }
+.geo-motores > div { min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.geo-veredito { margin-top: 12px; padding: 10px 13px; border-radius: 10px; font-size: 12.5px; line-height: 1.5; }
+.geo-veredito.igual { border: 1px solid rgba(0,237,100,.3); background: rgba(0,237,100,.06); }
+.geo-veredito.diferente { border: 1px solid rgba(249,115,22,.35); background: rgba(249,115,22,.07); }
+@media (max-width: 760px) { .geo-motores { grid-template-columns: 1fr; } }

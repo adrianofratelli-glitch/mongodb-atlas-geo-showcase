@@ -7,6 +7,8 @@ import ComparacaoRotas from '../components/ComparacaoRotas'
 import ComparacaoOperadores from '../components/ComparacaoOperadores'
 import Limites from '../components/Limites'
 import PainelIndiceBusca from '../components/PainelIndiceBusca'
+import PainelGeocerca from '../components/PainelGeocerca'
+import CasoNegocio from '../components/CasoNegocio'
 
 // Nenhum campo desta aba é texto livre. Um clienteId digitado errado devolve
 // tela vazia, e no palco isso é lido como "a demo não encontrou nada" — não
@@ -136,6 +138,9 @@ export default function Geo() {
         <h2 style={{ fontSize: 18, marginBottom: 6 }}>
           Investigar 90 dias sem tirar o histórico do banco
         </h2>
+        <CasoNegocio casos={[
+          { setor: 'Prevenção a fraude (cartão)', pergunta: 'duas compras presenciais do mesmo cliente exigiriam viajar a 900 km/h? Velocidade impossível vira sinal para a mesa de risco revisar, não bloqueio automático.' },
+        ]} />
         <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 14 }}>
           Duas compras presenciais do mesmo cliente, distantes demais para o tempo entre elas.{' '}
           <code>$setWindowFields</code> particiona por cliente, <code>$shift</code> traz a compra anterior e
@@ -357,6 +362,10 @@ export default function Geo() {
         <h2 style={{ fontSize: 18, marginBottom: 6 }}>
           Consultar por área, proximidade e distância
         </h2>
+        <CasoNegocio casos={[
+          { setor: 'Varejo', pergunta: 'qual loja ou terminal está mais perto do cliente, e a que distância ($geoNear, $near)?' },
+          { setor: 'Logística', pergunta: 'quais pontos estão dentro da área atendida, e qual rota cruza a área ($geoWithin × $geoIntersects)?' },
+        ]} />
         <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 14 }}>
           Escolha a pergunta e compare quando usar cada operador. Selecione um operador para ver seu mapa e sua query.
         </p>
@@ -444,12 +453,14 @@ export default function Geo() {
         )}
       </section>
       <PainelIndiceBusca municipios={municipios} clientes={status?.fraudes_plantadas?.lista || []} />
+      <PainelGeocerca municipios={municipios} />
 
       <Limites titulo="Escopo desta demonstração" itens={[
         <>O exemplo de rotas usa três LineStrings sintéticas via $documents, sem índice nem persistência, para demonstrar os predicados. Centro e raio governam terminais e rotas. Os percursos sintéticos mantêm suas distâncias ao centro quando o raio muda; não representam trajetos pelas ruas.</>,
         <>A investigação calcula distância esférica e velocidade implícita; não calcula trajeto por ruas nem aprova uma compra.</>,
         <>As consultas de proximidade aos terminais usam índices 2dsphere. A coleção tem três índices 2dsphere em local; o $geoNear indica qual campo usar com key: "local".</>,
         <>O gabarito do painel 01 confere a regra contra os pares que o gerador plantou; não mede fraude real.</>,
+        <>A geocerca do painel 04 é um heptágono sintético em volta do centro escolhido, não um limite real de entrega ou de risco. Os casos de negócio são perguntas típicas de cada setor, não clientes.</>,
       ]} />
     </div>
   )
