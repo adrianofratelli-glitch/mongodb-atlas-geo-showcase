@@ -82,7 +82,7 @@ export default function PainelIndiceBusca({ municipios, clientes }) {
       </div>
 
       <div className="row" style={{ marginTop: 12, alignItems: 'stretch', flexWrap: 'wrap' }}>
-        <div className="col card" style={{ minWidth: 300, flex: '1 1 340px' }}>
+        <div className="col card" style={{ minWidth: 'min(300px, 100%)', flex: '1 1 340px' }}>
           <strong style={{ fontSize: 14 }}>A · Mesmo <code>$geoWithin</code>, dois índices</strong>
           <p style={{ color: 'var(--text-secondary)', fontSize: 12.5, margin: '6px 0 10px' }}>
             Filtro de cliente + status + raio. O índice composto põe a igualdade antes do geo; o 2dsphere puro só
@@ -138,7 +138,7 @@ export default function PainelIndiceBusca({ municipios, clientes }) {
           )}
         </div>
 
-        <div className="col card" style={{ minWidth: 300, flex: '1 1 340px' }}>
+        <div className="col card" style={{ minWidth: 'min(300px, 100%)', flex: '1 1 340px' }}>
           <strong style={{ fontSize: 14 }}>B · Atlas Search: texto + raio + facetas</strong>
           <p style={{ color: 'var(--text-secondary)', fontSize: 12.5, margin: '6px 0 10px' }}>
             Um <code>compound</code> com texto fuzzy (analisador português), <code>near</code> somando score por

@@ -256,6 +256,8 @@ button:focus-visible, a:focus-visible, input:focus-visible {
   .module-picker { align-items: stretch; flex-direction: column; }
   .module-picker select { flex-basis: auto; width: 100%; }
   .module-picker span { margin-left: 0; }
+  /* Badge longo ("dataset sintético · coordenadas…") estourava 30 px em 320 px. */
+  .badge { white-space: normal; max-width: 100%; }
 }
 
 /* ── Flow animation (Redis vs Change Streams demos) ─────────────────────── */
