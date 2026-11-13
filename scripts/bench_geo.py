@@ -119,6 +119,10 @@ def bench_geocerca(runs: int, categoria: str = "farmácia", termo: str = "drogar
 
 
 def varredura_geocerca(categoria: str = "farmácia") -> None:
+    ok, msg = geo._estado_search_index(geo.GEO_GEOCERCA_INDEX)
+    if not ok:  # sem índice READY o $search volta vazio e a varredura acusaria divergência falsa
+        print(f"varredura: Search indisponível ({msg})")
+        return
     municipios = [m["municipio"] for m in geo._municipios()]
     print(f"\nVarredura · {len(municipios)} municípios × {TAMANHOS_VARREDURA} km · categoria {categoria}\n")
     for densificar in (False, True):
