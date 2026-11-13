@@ -349,12 +349,16 @@ def verificar_prontidao(banco, colecao, alvo: int) -> tuple[bool, list[str]]:
     if ausentes:
         problemas.append("índices MongoDB ausentes: " + ", ".join(ausentes))
 
-    nome_search = os.getenv("GEO_SEARCH_INDEX", "idx_geo_estabelecimento").strip()
-    try:
-        search = list(colecao.list_search_indexes(nome_search))
-    except PyMongoError as erro:
-        problemas.append(f"não foi possível consultar Atlas Search: {erro}")
-    else:
+    # Painel 03 (busca) e painel 04 (geocerca, ADR 0003): os dois saem do
+    # mesmo scripts/create_search_index_geo.sh.
+    for variavel, padrao in (("GEO_SEARCH_INDEX", "idx_geo_estabelecimento"),
+                             ("GEO_GEOCERCA_INDEX", "idx_geo_geocerca")):
+        nome_search = os.getenv(variavel, padrao).strip() or padrao
+        try:
+            search = list(colecao.list_search_indexes(nome_search))
+        except PyMongoError as erro:
+            problemas.append(f"não foi possível consultar Atlas Search: {erro}")
+            break
         indice = search[0] if search else {}
         if indice.get("status") != "READY" or indice.get("queryable") is False:
             problemas.append(f"Atlas Search '{nome_search}' não está READY/consultável")

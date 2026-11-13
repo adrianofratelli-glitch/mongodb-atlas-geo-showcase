@@ -109,3 +109,23 @@ def test_rotas_separam_conter_de_intersectar():
     assert ids["$geoWithin"] == ["A"]
     assert set(ids["$geoIntersects"]) == {"A", "B"}
     assert math.isfinite(r["ms"])
+
+
+def test_geocerca_nativo_e_search_dao_a_mesma_resposta():
+    """Painel 04: mesma geocerca, os dois motores, terminal a terminal (ADR 0003)."""
+    assert geo._estado_search_index(geo.GEO_GEOCERCA_INDEX)[0], "rode scripts/create_search_index_geo.sh"
+    r = geo.geocerca_comparar(geo.GeocercaRequest(
+        centro=SAO_PAULO, raioKm=15, categoria="farmácia", termo="drogaria", execucoes=1))
+    assert r["nativo"]["n_terminais"] > 0
+    assert r["comparacao"]["mesmas_compras"] is True
+    assert r["nativo"]["plano"]["indice_usado"] == "categoria_local_idx"
+    assert all(x["score"] > 0 for x in r["search"]["relevancia"])
+
+
+def test_geocerca_grande_densificada_alinha_os_dois_motores():
+    """Borda cartesiana (Search) × geodésica (2dsphere): densificar alinha."""
+    sorocaba = next(m for m in geo._municipios() if m["municipio"] == "Sorocaba")["centro"]
+    r = geo.geocerca_comparar(geo.GeocercaRequest(
+        centro=sorocaba, raioKm=600, categoria="farmácia", execucoes=1, densificar=True))
+    assert r["vertices"] > 100
+    assert r["comparacao"]["mesmas_compras"] is True

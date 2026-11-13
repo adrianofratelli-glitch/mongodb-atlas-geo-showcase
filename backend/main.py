@@ -86,7 +86,7 @@ def preflight():
     if mongo_ok:
         checks.update(geo.preflight_checks())
 
-    # geo_search é opcional: a UI mostra "não configurado" e o resto roda.
-    opcionais = {"geo_search"}
+    # Os índices de busca são opcionais: a UI mostra "não configurado" e o resto roda.
+    opcionais = {"geo_search", "geo_geocerca"}
     ready = all(check["ok"] for key, check in checks.items() if key not in opcionais)
     return JSONResponse(status_code=200 if ready else 503, content={"ready": ready, "checks": checks})

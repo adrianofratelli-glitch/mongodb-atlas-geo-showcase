@@ -9,6 +9,10 @@ O objetivo é provar comportamento, não desenhar mapa bonito:
    operadores MQL puros. Nenhum documento sai do cluster para o cálculo.
 3. `POST /geo/search` — um único `$search` com relevância textual, filtro
    geográfico e categoria, mais `$searchMeta` para as facetas.
+4. `POST /geo/geocerca-comparar` — a mesma geocerca (polígono + categoria)
+   respondida pelo 2dsphere nativo e pelo Atlas Search (`geoWithin` num
+   `compound` com texto), com latência e explain medidos e a resposta
+   comparada terminal a terminal (ADR 0003).
 
 Todos os endpoints devolvem o pipeline executado: nada na tela vem de mock.
 """
@@ -33,6 +37,11 @@ router = APIRouter(prefix="/geo", tags=["Geo"])
 GEO_DB = os.getenv("GEO_DB", "geo").strip() or "geo"
 GEO_COLECAO = "transacoes"
 GEO_SEARCH_INDEX = os.getenv("GEO_SEARCH_INDEX", "idx_geo_estabelecimento").strip() or "idx_geo_estabelecimento"
+# Índice próprio, separado do `GEO_SEARCH_INDEX` do painel 03: guarda em
+# `storedSource` só os campos que a resposta usa, e o `$search` devolve direto
+# do mongot (`returnStoredSource`), sem buscar o documento inteiro no mongod.
+# Criado por scripts/create_search_index_geo.sh. ADR 0003.
+GEO_GEOCERCA_INDEX = os.getenv("GEO_GEOCERCA_INDEX", "idx_geo_geocerca").strip() or "idx_geo_geocerca"
 
 INDICE_COMPOSTO = "cliente_status_local_idx"
 INDICE_GEO_PURO = "local_2dsphere_idx"
@@ -189,14 +198,27 @@ def _explain_find(filtro: dict, hint: str) -> dict[str, Any]:
     return {**_resumo_plano(banco.command(comando)), "comando": _comando_explain(enviado["filter"], enviado["hint"])}
 
 
-def _search_disponivel() -> tuple[bool, str]:
+def _estado_search_index(nome: str) -> tuple[bool, str]:
+    """O índice existe E está READY/consultável?
+
+    Conferir só o nome não basta: `$search` contra índice ausente ou ainda em
+    BUILDING devolve vazio sem erro, e "zero resultados" seria lido na tela
+    como resposta do motor.
+    """
     try:
-        nomes = {indice.get("name") for indice in colecao.list_search_indexes()}
+        indices = list(colecao.list_search_indexes(nome))
     except Exception as exc:  # driver antigo, permissão ou cluster sem Search
         return False, f"não foi possível listar os search indexes ({type(exc).__name__})"
-    if GEO_SEARCH_INDEX in nomes:
-        return True, "disponível"
-    return False, f"crie o índice {GEO_SEARCH_INDEX} com scripts/create_search_index_geo.sh"
+    if not indices:
+        return False, f"crie o índice {nome} com scripts/create_search_index_geo.sh"
+    indice = indices[0]
+    if indice.get("status") != "READY" or indice.get("queryable") is False:
+        return False, f"índice {nome} ainda não está consultável (status {indice.get('status') or 'desconhecido'})"
+    return True, "disponível"
+
+
+def _search_disponivel() -> tuple[bool, str]:
+    return _estado_search_index(GEO_SEARCH_INDEX)
 
 
 def _municipios() -> list[dict[str, Any]]:
@@ -233,6 +255,7 @@ def preflight_checks() -> dict[str, dict[str, Any]]:
             "message": f"{total} transações em {GEO_DB}.{GEO_COLECAO}" if total else "execute scripts/seed_geo.py",
         },
         "geo_search": {"ok": search_ok, "message": search_msg},
+        "geo_geocerca": dict(zip(("ok", "message"), _estado_search_index(GEO_GEOCERCA_INDEX))),
     }
 
 
@@ -319,6 +342,8 @@ def status():
         "transacoes": total,
         "indices": indices,
         "search": {"index": GEO_SEARCH_INDEX, "disponivel": search_ok, "mensagem": search_msg},
+        "geocerca": dict(zip(("index", "disponivel", "mensagem"),
+                             (GEO_GEOCERCA_INDEX, *_estado_search_index(GEO_GEOCERCA_INDEX)))),
         "fraudes_plantadas": fraudes,
     }
 
@@ -1032,4 +1057,272 @@ def geo_search(pedido: SearchRequest):
         "meta": meta[0] if meta else {},
         "pipeline": pipeline,
         "pipeline_meta": pipeline_meta,
+    }
+
+
+# ───────────────────────────────────── geocerca: dois motores, mesma pergunta ────
+
+# Mesmas categorias de scripts/seed_geo.py (CATEGORIAS). Seleção, não texto
+# livre: uma categoria inexistente devolveria geocerca vazia nos dois motores.
+CATEGORIAS_DATASET = ["alimentação", "combustível", "farmácia", "vestuário", "serviços"]
+
+# Fatores de raio por vértice: a geocerca é um heptágono irregular, porque uma
+# zona de entrega ou de risco real não é um círculo. Fixos para a mesma
+# seleção desenhar sempre o mesmo polígono.
+_FATORES_GEOCERCA = (1.0, 0.75, 1.1, 0.85, 1.2, 0.7, 0.95)
+
+
+def _poligono_geocerca(centro: list[float], raio_km: float) -> dict:
+    """Heptágono irregular (anel fechado, sentido anti-horário) em torno do centro.
+
+    Geometria sintética de exemplo, não limite real de zona de entrega ou de
+    área de risco. A longitude é corrigida por cos(lat), como em
+    `_poligono_quadrado`, e a latitude fica dentro de [-89,9; 89,9].
+    """
+    lng, lat = centro
+    cos_lat = max(math.cos(math.radians(lat)), 0.1)
+    anel = []
+    n = len(_FATORES_GEOCERCA)
+    for k, fator in enumerate(_FATORES_GEOCERCA):
+        angulo = 2 * math.pi * k / n
+        r = raio_km * fator
+        anel.append([
+            round(min(max(lng + r * math.cos(angulo) / (111.32 * cos_lat), -179.9), 179.9), 6),
+            round(min(max(lat + r * math.sin(angulo) / 111.32, -89.9), 89.9), 6),
+        ])
+    anel.append(list(anel[0]))
+    return {"type": "Polygon", "coordinates": [anel]}
+
+
+def _densificar_anel(poligono: dict, passo_graus: float = 0.05) -> dict:
+    """Vértices intermediários a cada ~`passo_graus` ao longo de cada aresta.
+
+    O Search traça a aresta como reta no plano lng/lat (cartesiana); o 2dsphere,
+    como arco geodésico. Em arestas de centenas de km os dois traçados se
+    afastam e um ponto perto da borda cai dentro num e fora no outro. Com
+    arestas curtas, arco e reta praticamente coincidem: os dois motores passam
+    a responder à mesma geometria. 0,05° ≈ 5,5 km.
+    """
+    anel = poligono["coordinates"][0]
+    saida: list[list[float]] = []
+    for (x1, y1), (x2, y2) in zip(anel, anel[1:]):
+        passos = max(1, math.ceil(max(abs(x2 - x1), abs(y2 - y1)) / passo_graus))
+        for i in range(passos):
+            t = i / passos
+            saida.append([round(x1 + (x2 - x1) * t, 6), round(y1 + (y2 - y1) * t, 6)])
+    saida.append(list(anel[0]))
+    return {"type": "Polygon", "coordinates": [saida]}
+
+
+def _resumo_explain_agregacao(explain: dict) -> dict[str, Any]:
+    """Tempo no servidor e plano de um `explain` de agregação.
+
+    Com estágios (`stages`), o tempo é o `executionTimeMillisEstimate` do último,
+    que é cumulativo. Pipeline todo empurrado para a camada de query não tem
+    `stages`: aí vale o `executionStats` do topo. Nada do bloco do mongot é
+    repassado inteiro: ele traz o host do nó, que não vai para a tela.
+    """
+    estagios = explain.get("stages")
+    if not estagios:
+        plano = _resumo_plano(explain)
+        return {**plano, "ms_servidor": plano.get("executionTimeMillis"), "primeiro_estagio": plano.get("estagio_vencedor")}
+    primeiro = estagios[0]
+    nome = next((chave for chave in primeiro if chave.startswith("$")), None)
+    resumo: dict[str, Any] = {
+        "primeiro_estagio": nome,
+        "ms_servidor": estagios[-1].get("executionTimeMillisEstimate"),
+        "docs_do_primeiro_estagio": primeiro.get("nReturned"),
+    }
+    if nome == "$cursor":
+        resumo.update(_resumo_plano(primeiro["$cursor"]))
+    return resumo
+
+
+def _explain_agregacao(pipeline: list[dict]) -> dict[str, Any]:
+    return _resumo_explain_agregacao(banco.command({
+        "explain": {"aggregate": GEO_COLECAO, "pipeline": pipeline, "cursor": {}},
+        "verbosity": "executionStats",
+    }))
+
+
+def _mediana(valores: list[float]) -> float | None:
+    if not valores:
+        return None
+    ordenados = sorted(valores)
+    meio = len(ordenados) // 2
+    return ordenados[meio] if len(ordenados) % 2 else (ordenados[meio - 1] + ordenados[meio]) / 2
+
+
+class GeocercaRequest(BaseModel):
+    centro: list[float] = Field(..., min_length=2, max_length=2, description="[lng, lat]")
+    raioKm: float = Field(15.0, ge=1, le=600)
+    categoria: str = Field("farmácia", max_length=32)
+    # Refinamento só do lado do Search: entra como `should`, ordena por
+    # relevância e não muda o conjunto. Por isso a comparação continua justa.
+    termo: str = Field("", max_length=60)
+    execucoes: int = Field(3, ge=1, le=5)
+    # Arestas curtas: o Search (reta lng/lat) e o 2dsphere (geodésica) passam a
+    # ver a mesma borda. Ver `_densificar_anel`.
+    densificar: bool = False
+
+
+@router.post("/geocerca-comparar")
+def geocerca_comparar(pedido: GeocercaRequest):
+    """Demo D — a mesma geocerca respondida pelo 2dsphere nativo e pelo Atlas Search.
+
+    Pergunta: "quais terminais da categoria X estão dentro desta zona, e com
+    quantas compras?". Os dois pipelines terminam no mesmo `$group`, então a
+    resposta é comparável terminal a terminal. Cada motor roda `execucoes`
+    vezes, alternados (latência de parede, inclui a rede), e um `explain`
+    (tempo no servidor). A MQL devolvida é a que foi executada.
+
+    O texto, quando há, fica no `should` do `compound`: soma relevância e não
+    filtra. Com o filtro igual, o conjunto tem de ser o mesmo; se não for, a
+    divergência aparece na resposta (borda cartesiana do Search × geodésica do
+    2dsphere), sem ajuste.
+    """
+    lng, lat = pedido.centro
+    if not (-180 <= lng <= 180 and -90 <= lat <= 90):
+        raise HTTPException(status_code=422, detail="centro fora do intervalo [lng, lat] válido.")
+    if pedido.categoria not in CATEGORIAS_DATASET:
+        raise HTTPException(status_code=422, detail=f"categoria deve ser uma de {', '.join(CATEGORIAS_DATASET)}.")
+
+    poligono = _poligono_geocerca(pedido.centro, pedido.raioKm)
+    if pedido.densificar:
+        poligono = _densificar_anel(poligono)
+    termo = pedido.termo.strip()
+    # O mesmo agrupamento nos dois caminhos: é ele que torna a resposta comparável.
+    agrupar = [
+        {"$group": {
+            "_id": "$dispositivo.id",
+            "compras": {"$sum": 1},
+            "nome": {"$first": "$estabelecimento.nome"},
+            "municipio": {"$first": "$municipio"},
+            "uf": {"$first": "$uf"},
+            "local": {"$first": "$local"},
+        }},
+        {"$sort": {"_id": 1}},
+    ]
+
+    pipeline_nativo = [
+        {"$match": {
+            "estabelecimento.categoria": pedido.categoria,
+            "local": {"$geoWithin": {"$geometry": poligono}},
+        }},
+        *agrupar,
+    ]
+
+    compound: dict[str, Any] = {"filter": [
+        {"geoWithin": {"path": "local", "geometry": poligono}},
+        {"in": {"path": "estabelecimento.categoria", "value": [pedido.categoria]}},
+    ]}
+    facetas: dict[str, list[dict]] = {"terminais": agrupar}
+    if termo:
+        compound["should"] = [{"text": {"query": termo, "path": "estabelecimento.nome", "fuzzy": {"maxEdits": 1}}}]
+        # Um por terminal: as compras do mesmo terminal empatam no score.
+        facetas["relevancia"] = [
+            {"$group": {
+                "_id": "$dispositivo.id",
+                "nome": {"$first": "$estabelecimento.nome"},
+                "municipio": {"$first": "$municipio"},
+                "score": {"$max": {"$meta": "searchScore"}},
+            }},
+            # Score zero = o termo não casou com o nome: não é "relevante".
+            {"$match": {"score": {"$gt": 0}}},
+            {"$sort": {"score": -1, "_id": 1}},
+            {"$limit": 5},
+            {"$project": {"_id": 0, "terminalId": "$_id", "nome": 1, "municipio": 1,
+                          "score": {"$round": ["$score", 3]}}},
+        ]
+    pipeline_search = [
+        {"$search": {"index": GEO_GEOCERCA_INDEX, "compound": compound, "returnStoredSource": True}},
+        {"$facet": facetas},
+    ]
+
+    search_ok, search_msg = _estado_search_index(GEO_GEOCERCA_INDEX)
+
+    tempos_nativo: list[float] = []
+    tempos_search: list[float] = []
+    nativo_saida: list[dict] = []
+    search_saida: dict[str, Any] = {}
+    erro_search = None
+    try:
+        for _ in range(pedido.execucoes):
+            inicio = time.perf_counter()
+            nativo_saida = list(colecao.aggregate(pipeline_nativo, maxTimeMS=20_000))
+            tempos_nativo.append((time.perf_counter() - inicio) * 1000)
+            if search_ok and erro_search is None:
+                inicio = time.perf_counter()
+                try:
+                    search_saida = (list(colecao.aggregate(pipeline_search, maxTimeMS=20_000)) or [{}])[0]
+                except OperationFailure as erro:
+                    erro_search = erro.details.get("errmsg", str(erro)) if erro.details else str(erro)
+                else:
+                    tempos_search.append((time.perf_counter() - inicio) * 1000)
+        plano_nativo = _explain_agregacao(pipeline_nativo)
+        plano_search = _explain_agregacao(pipeline_search) if search_ok and erro_search is None else None
+    except OperationFailure as erro:
+        raise HTTPException(status_code=409, detail=f"Geocerca falhou: {erro.details.get('errmsg', str(erro))}")
+
+    def _bloco(terminais: list[dict], tempos: list[float], plano: dict | None) -> dict[str, Any]:
+        return {
+            "terminais": terminais,
+            "n_terminais": len(terminais),
+            "compras": sum(t.get("compras", 0) for t in terminais),
+            "ms_parede": [round(t, 1) for t in tempos],
+            "ms_parede_p50": round(_mediana(tempos), 1) if tempos else None,
+            "plano": plano,
+        }
+
+    nativo = {
+        "motor": "2dsphere nativo",
+        "pipeline": pipeline_nativo,
+        **_bloco(nativo_saida, tempos_nativo, plano_nativo),
+    }
+    if not search_ok:
+        search = {"motor": "Atlas Search", "estado": "nao_configurado", "mensagem": search_msg,
+                  "index": GEO_GEOCERCA_INDEX, "pipeline": pipeline_search}
+        comparacao = None
+    elif erro_search:
+        search = {"motor": "Atlas Search", "estado": "erro", "mensagem": erro_search,
+                  "index": GEO_GEOCERCA_INDEX, "pipeline": pipeline_search}
+        comparacao = None
+    else:
+        terminais_search = search_saida.get("terminais", [])
+        search = {
+            "motor": "Atlas Search",
+            "estado": "ok",
+            "index": GEO_GEOCERCA_INDEX,
+            "pipeline": pipeline_search,
+            "relevancia": search_saida.get("relevancia", []),
+            **_bloco(terminais_search, tempos_search, plano_search),
+        }
+        por_id_nativo = {t["_id"]: t.get("compras") for t in nativo_saida}
+        por_id_search = {t["_id"]: t.get("compras") for t in terminais_search}
+        comparacao = {
+            "mesmo_conjunto": set(por_id_nativo) == set(por_id_search),
+            "mesmas_compras": por_id_nativo == por_id_search,
+            "so_nativo": sorted(set(por_id_nativo) - set(por_id_search)),
+            "so_search": sorted(set(por_id_search) - set(por_id_nativo)),
+            "compras_divergentes": sorted(
+                i for i in set(por_id_nativo) & set(por_id_search) if por_id_nativo[i] != por_id_search[i]
+            ),
+        }
+
+    return {
+        "pergunta": (
+            f"Quais terminais de {pedido.categoria} estão dentro da geocerca (≈ {pedido.raioKm:g} km), "
+            "e com quantas compras?"
+        ),
+        "centro": [lng, lat],
+        "raioKm": pedido.raioKm,
+        "categoria": pedido.categoria,
+        "termo": termo,
+        "densificado": pedido.densificar,
+        "vertices": len(poligono["coordinates"][0]) - 1,
+        "poligono": poligono,
+        "execucoes": pedido.execucoes,
+        "nativo": nativo,
+        "search": search,
+        "comparacao": comparacao,
     }

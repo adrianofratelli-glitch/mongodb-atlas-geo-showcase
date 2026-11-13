@@ -295,10 +295,11 @@ def test_preflight_geo_e_read_only_e_exige_search_ready(monkeypatch):
             return [{"name": nome} for nome in seed_geo.INDICES_OBRIGATORIOS]
 
         def list_search_indexes(self, nome):
-            assert nome == "idx_geo_estabelecimento"
+            assert nome in {"idx_geo_estabelecimento", "idx_geo_geocerca"}
             return [{"name": nome, "status": "READY", "queryable": True}]
 
     monkeypatch.delenv("GEO_SEARCH_INDEX", raising=False)
+    monkeypatch.delenv("GEO_GEOCERCA_INDEX", raising=False)
     pronto, problemas = seed_geo.verificar_prontidao(Banco(), Colecao(), 40)
     assert pronto is True
     assert problemas == []
@@ -779,3 +780,164 @@ def test_explain_find_monta_o_texto_do_comando_enviado(monkeypatch):
     assert enviados[0]["explain"]["hint"] == geo.INDICE_COMPOSTO
     assert f'.hint("{geo.INDICE_COMPOSTO}")' in r["comando"]
     assert '"clienteId": "CLI1"' in r["comando"]
+
+
+# ── Demo D · geocerca: 2dsphere nativo × Atlas Search (ADR 0003) ─────────────
+def _area_assinada(anel):
+    return sum(x1 * y2 - x2 * y1 for (x1, y1), (x2, y2) in zip(anel, anel[1:])) / 2
+
+
+def test_poligono_geocerca_fecha_o_anel_no_sentido_anti_horario():
+    anel = geo._poligono_geocerca([-46.63, -23.55], 15)["coordinates"][0]
+    assert anel[0] == anel[-1]
+    assert len(anel) == len(geo._FATORES_GEOCERCA) + 1
+    assert _area_assinada(anel) > 0
+
+
+def test_densificar_mantem_os_vertices_e_encurta_as_arestas():
+    original = geo._poligono_geocerca([-47.45, -23.5], 600)
+    denso = geo._densificar_anel(original)["coordinates"][0]
+    for vertice in original["coordinates"][0]:
+        assert vertice in denso
+    assert denso[0] == denso[-1]
+    passos = [max(abs(x2 - x1), abs(y2 - y1)) for (x1, y1), (x2, y2) in zip(denso, denso[1:])]
+    assert max(passos) <= 0.05 + 1e-6
+
+
+def test_estado_search_index_exige_ready(monkeypatch):
+    class Colecao:
+        def __init__(self, indices):
+            self.indices = indices
+
+        def list_search_indexes(self, nome):
+            return [i for i in self.indices if i["name"] == nome]
+
+    monkeypatch.setattr(geo, "colecao", Colecao([{"name": "x", "status": "BUILDING", "queryable": False}]))
+    ok, msg = geo._estado_search_index("x")
+    assert ok is False and "BUILDING" in msg
+    monkeypatch.setattr(geo, "colecao", Colecao([]))
+    assert geo._estado_search_index("x")[0] is False
+    monkeypatch.setattr(geo, "colecao", Colecao([{"name": "x", "status": "READY", "queryable": True}]))
+    assert geo._estado_search_index("x") == (True, "disponível")
+
+
+def test_resumo_explain_agregacao_com_e_sem_stages():
+    com_stages = {"stages": [
+        {"$cursor": {
+            "queryPlanner": {"winningPlan": {"stage": "FETCH", "inputStage": {
+                "stage": "IXSCAN", "indexName": "categoria_local_idx"}}},
+            "executionStats": {"nReturned": 9, "executionTimeMillis": 5,
+                               "totalKeysExamined": 11, "totalDocsExamined": 10},
+        }, "nReturned": 9, "executionTimeMillisEstimate": 4},
+        {"$group": {}, "nReturned": 2, "executionTimeMillisEstimate": 6},
+    ]}
+    r = geo._resumo_explain_agregacao(com_stages)
+    assert r["primeiro_estagio"] == "$cursor"
+    assert r["ms_servidor"] == 6
+    assert r["indice_usado"] == "categoria_local_idx"
+    assert r["totalKeysExamined"] == 11
+
+    search = {"stages": [
+        {"$_internalDocumentResultsAndMetadata": {"source": {"explain": {"metadata": {"mongotHostName": "h"}}}},
+         "nReturned": 9, "executionTimeMillisEstimate": 30},
+        {"$facet": {}, "executionTimeMillisEstimate": 31},
+    ]}
+    r = geo._resumo_explain_agregacao(search)
+    assert r["ms_servidor"] == 31 and r["docs_do_primeiro_estagio"] == 9
+    assert "h" not in str(r)  # o host do mongot não vai para a tela
+
+    sem_stages = {"queryPlanner": {"winningPlan": {"stage": "IXSCAN", "indexName": "i"}},
+                  "executionStats": {"executionTimeMillis": 3}}
+    assert geo._resumo_explain_agregacao(sem_stages)["ms_servidor"] == 3
+
+
+class _ColecaoGeocerca:
+    """Registra cada pipeline enviado e responde conforme o primeiro estágio."""
+
+    def __init__(self, nativo, search, status="READY"):
+        self.nativo, self.search, self.status = nativo, search, status
+        self.executados: list[list[dict]] = []
+
+    def list_search_indexes(self, nome):
+        return [{"name": nome, "status": self.status, "queryable": self.status == "READY"}]
+
+    def aggregate(self, pipeline, **_kw):
+        self.executados.append(pipeline)
+        if "$search" in pipeline[0]:
+            return [{"terminais": self.search, "relevancia": []}]
+        return list(self.nativo)
+
+
+class _BancoExplain:
+    def __init__(self):
+        self.explicados: list[list[dict]] = []
+
+    def command(self, comando):
+        self.explicados.append(comando["explain"]["pipeline"])
+        return {"stages": [{"$x": {}, "nReturned": 1, "executionTimeMillisEstimate": 1}]}
+
+
+def _pedido_geocerca(**kw):
+    base = {"centro": [-46.63, -23.55], "raioKm": 15, "categoria": "farmácia", "termo": "drogaria", "execucoes": 2}
+    return geo.GeocercaRequest(**{**base, **kw})
+
+
+def test_geocerca_recusa_categoria_fora_do_dataset_e_centro_invalido():
+    with pytest.raises(HTTPException) as exc:
+        geo.geocerca_comparar(_pedido_geocerca(categoria="cassino"))
+    assert exc.value.status_code == 422
+    with pytest.raises(HTTPException) as exc:
+        geo.geocerca_comparar(_pedido_geocerca(centro=[0.0, 95.0]))
+    assert exc.value.status_code == 422
+
+
+def test_geocerca_exibe_os_pipelines_executados_e_compara_terminal_a_terminal(monkeypatch):
+    terminais = [{"_id": "POS1", "compras": 3}, {"_id": "POS2", "compras": 1}]
+    colecao = _ColecaoGeocerca(terminais, terminais)
+    banco = _BancoExplain()
+    monkeypatch.setattr(geo, "colecao", colecao)
+    monkeypatch.setattr(geo, "banco", banco)
+
+    r = geo.geocerca_comparar(_pedido_geocerca())
+
+    # A MQL na tela é exatamente a enviada ao servidor (execuções e explain).
+    assert colecao.executados == [r["nativo"]["pipeline"], r["search"]["pipeline"]] * 2
+    assert banco.explicados == [r["nativo"]["pipeline"], r["search"]["pipeline"]]
+    busca = r["search"]["pipeline"][0]["$search"]
+    assert busca["index"] == geo.GEO_GEOCERCA_INDEX and busca["returnStoredSource"] is True
+    # Mesmo filtro nos dois motores; o texto só no `should`, sem filtrar.
+    assert busca["compound"]["filter"][0]["geoWithin"]["geometry"] == r["poligono"]
+    assert r["nativo"]["pipeline"][0]["$match"]["local"]["$geoWithin"]["$geometry"] == r["poligono"]
+    assert busca["compound"]["should"][0]["text"]["query"] == "drogaria"
+    assert "must" not in busca["compound"]
+    assert r["comparacao"]["mesmas_compras"] is True
+    assert r["nativo"]["compras"] == 4 and len(r["nativo"]["ms_parede"]) == 2
+
+
+def test_geocerca_mostra_a_divergencia_sem_ajustar(monkeypatch):
+    colecao = _ColecaoGeocerca([{"_id": "POS1", "compras": 3}],
+                               [{"_id": "POS1", "compras": 3}, {"_id": "POS9", "compras": 2}])
+    monkeypatch.setattr(geo, "colecao", colecao)
+    monkeypatch.setattr(geo, "banco", _BancoExplain())
+    r = geo.geocerca_comparar(_pedido_geocerca(termo=""))
+    assert r["comparacao"]["mesmo_conjunto"] is False
+    assert r["comparacao"]["so_search"] == ["POS9"] and r["comparacao"]["so_nativo"] == []
+    assert "should" not in r["search"]["pipeline"][0]["$search"]["compound"]
+
+
+def test_geocerca_sem_indice_ready_nao_roda_search_e_mede_o_nativo(monkeypatch):
+    colecao = _ColecaoGeocerca([{"_id": "POS1", "compras": 3}], [], status="BUILDING")
+    monkeypatch.setattr(geo, "colecao", colecao)
+    monkeypatch.setattr(geo, "banco", _BancoExplain())
+    r = geo.geocerca_comparar(_pedido_geocerca())
+    assert all("$search" not in p[0] for p in colecao.executados)
+    assert r["search"]["estado"] == "nao_configurado" and r["comparacao"] is None
+    assert r["nativo"]["n_terminais"] == 1
+
+
+def test_geocerca_densificada_envia_o_poligono_denso(monkeypatch):
+    monkeypatch.setattr(geo, "colecao", _ColecaoGeocerca([], []))
+    monkeypatch.setattr(geo, "banco", _BancoExplain())
+    r = geo.geocerca_comparar(_pedido_geocerca(raioKm=600, densificar=True))
+    assert r["densificado"] is True and r["vertices"] > 100
+    assert r["nativo"]["pipeline"][0]["$match"]["local"]["$geoWithin"]["$geometry"] == r["poligono"]
