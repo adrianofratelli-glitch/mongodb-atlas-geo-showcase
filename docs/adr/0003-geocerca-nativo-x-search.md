@@ -27,9 +27,10 @@ Implementar **(a)** no painel 04 (`POST /geo/geocerca-comparar`,
 - **Nativo:** `$match` com `estabelecimento.categoria` e `$geoWithin`
   `$geometry` (o planner escolhe `categoria_local_idx`) + `$group` por terminal.
 - **Search:** `$search` com `compound.filter` = `geoWithin` `geometry` + `in`
-  categoria, e o texto como `should` (ordena por relevância, não filtra; o
-  conjunto continua comparável). Mesmo `$group` dentro de um `$facet`, com um
-  ramo extra "mais relevantes para o termo".
+  categoria e o mesmo `$group`. O texto entra num segundo pipeline, com o
+  mesmo `filter` e o texto como `should` (ordena por relevância, não filtra),
+  que devolve os 5 terminais mais relevantes. Os três pipelines saem de
+  `_pipelines_geocerca`, usado pelo endpoint e pelo bench.
 - **Índice próprio** `idx_geo_geocerca` (não o `idx_geo_estabelecimento` do
   painel 03): só `local` (geo), `estabelecimento.categoria` (token) e
   `estabelecimento.nome` (string pt), com `storedSource` dos campos que o
@@ -40,9 +41,13 @@ Implementar **(a)** no painel 04 (`POST /geo/geocerca-comparar`,
   ausente ou em BUILDING devolve vazio sem erro; sem o índice, o Search não
   roda, o card mostra "indisponível" e o nativo continua medido. O
   `_search_disponivel` do painel 03 passou a usar a mesma checagem.
-- **Medição:** cada motor roda 3×, alternados (parede p50, inclui a rede),
-  mais um `explain("executionStats")` do mesmo pipeline (tempo no servidor:
-  `executionTimeMillisEstimate` do último estágio). Do bloco do mongot só saem
+- **Medição justa:** os dois pipelines comparados fazem o mesmo trabalho
+  (filtro + `$group`, sem pontuação). Cada um roda 3×, alternados (parede p50,
+  inclui a rede), mais um `explain("executionStats")` (tempo no servidor:
+  `executionTimeMillisEstimate` do último estágio). Com termo, o `compound`
+  com `should: text` roda à parte, uma vez e em explain: é o custo extra da
+  relevância. Falha do lado Search (execução, explain ou relevância) degrada
+  só o cartão do Search. Do bloco do mongot só saem
   números: ele traz o host do nó.
 - **A MQL exibida é a executada:** a resposta devolve os dois pipelines exatos
   enviados ao `aggregate` e ao `explain` (teste offline compara as listas).
@@ -53,7 +58,9 @@ Implementar **(a)** no painel 04 (`POST /geo/geocerca-comparar`,
 ## Achados medidos (geo_f4_test, 150 mil docs, MongoDB 9.0.7)
 
 - **Mesma resposta** em 117 de 120 casos (40 municípios × 8/60/600 km,
-  farmácia): conjunto de terminais e compras iguais, terminal a terminal.
+  farmácia, sem densificar) e em 120 de 120 com as bordas densificadas:
+  conjunto de terminais e compras iguais, terminal a terminal. Varredura
+  reproduzível com `GEO_DB=geo_f4_test backend/venv/bin/python scripts/bench_geo.py --geocerca --varredura --runs 5`.
 - **Divergência real em 3 casos de 600 km** (Sorocaba, Campinas,
   Florianópolis): 1 a 3 terminais só no Search. O Search traça a aresta do
   polígono como reta no plano lng/lat; o 2dsphere, como arco geodésico. Em
@@ -61,22 +68,29 @@ Implementar **(a)** no painel 04 (`POST /geo/geocerca-comparar`,
   outro. A tela mostra a diferença sem ajuste.
 - **Remédio medido:** "densificar bordas" (`_densificar_anel`, um vértice a
   cada 0,05° ≈ 5,5 km; 7 → ~600 vértices) alinha os dois motores nos três
-  casos. Custo: o polígono denso pesa mais no nativo que no Search.
-- **Latência no servidor** (mediana de 3 explains, farmácia, termo
-  "drogaria"):
+  casos e mantém 120/120 na varredura. Custo: o polígono denso pesa mais no nativo que no Search.
+- **Latência com o mesmo trabalho dos dois lados** (sem texto: polígono +
+  categoria + o mesmo `$group`; servidor = mediana de 5 explains, parede =
+  p50 de 5 execuções; RTT ≈ 375 ms). Reproduza com
+  `GEO_DB=geo_f4_test backend/venv/bin/python scripts/bench_geo.py --geocerca --varredura --runs 5`:
 
-  | geocerca | vértices | terminais nativo / Search | mesma resposta | nativo (ms) | Search (ms) |
-  |---|---:|---:|---|---:|---:|
-  | São Paulo ≈ 8 km | 7 | 8 / 8 | sim | 37 | 84 |
-  | São Paulo ≈ 15 km | 7 | 24 / 24 | sim | 50 | 130 |
-  | São Paulo ≈ 60 km | 7 | 48 / 48 | sim | 50 | 142 |
-  | Sorocaba ≈ 600 km | 7 | 163 / 166 | não (3 só no Search) | 110 | 227 |
-  | Sorocaba ≈ 600 km, densificada | 598 | 166 / 166 | sim | 380 | 238 |
+  | geocerca | vértices | terminais nativo / Search | mesma resposta | nativo servidor (ms) | Search servidor (ms) | Search ÷ nativo | relevância "drogaria" servidor (ms) |
+  |---|---:|---:|---|---:|---:|---:|---:|
+  | São Paulo ≈ 8 km | 7 | 8 / 8 | sim | 30 | 72 | 2,4× | 84 |
+  | São Paulo ≈ 15 km | 7 | 24 / 24 | sim | 46 | 92 | 2,0× | 105 |
+  | São Paulo ≈ 60 km | 7 | 48 / 48 | sim | 50 | 97 | 1,9× | 125 |
+  | Sorocaba ≈ 600 km | 7 | 163 / 166 | não (3 só no Search) | 109 | 139 | 1,3× | 204 |
+  | Sorocaba ≈ 600 km, densificada | 598 | 166 / 166 | sim | 358 | 210 | 0,6× | 242 |
 
-  Para polígono simples + igualdade, o nativo com índice composto é o caminho
-  mais barato (≈ 2–3× menos). Com polígono de centenas de vértices a ordem se
-  inverte. O Search se paga quando a pergunta tem texto, relevância ou
-  facetas. A tela mostra os números de cada clique, sem conclusão fixa.
+  Com polígono simples + igualdade, o nativo com índice composto fica ≈ 2×
+  mais barato no servidor (1,9–2,4×) em geocercas de até 60 km e 1,3× a
+  600 km. Com 598 vértices a ordem se inverte: o Search leva 0,6× o tempo do
+  nativo. Na parede, a rede domina e os dois empatam (diferença ≤ 4% nas
+  geocercas de até 60 km). A relevância (`should: text`, um por terminal,
+  top 5) custa de +12 a +65 ms no servidor sobre o Search sem texto: é
+  trabalho que o nativo não faz, por isso fica fora da comparação. O
+  endpoint mede um explain por motor a cada clique e a tela tira a conclusão
+  da razão medida, sem frase fixa.
 
 ## Por que não (b) agora
 
@@ -98,5 +112,5 @@ Implementar **(a)** no painel 04 (`POST /geo/geocerca-comparar`,
   `geo`, ele só existe depois de `./scripts/create_search_index_geo.sh`; até
   lá o painel 04 mostra o Search indisponível e o `seed_geo.py --check`
   reprova.
-- Cada clique custa 6 agregações + 2 explains (≈ 3–5 s de parede a partir
+- Cada clique custa 6 agregações + 2 explains (+ 1 agregação e 1 explain com termo) (≈ 3–5 s de parede a partir
   de um notebook com RTT ≈ 320 ms).

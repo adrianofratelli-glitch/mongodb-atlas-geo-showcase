@@ -18,6 +18,13 @@ const RAIOS_GEOCERCA_KM = [8, 15, 60, 600]
 const MAX_NO_MAPA = 24
 
 const fmt = (n) => (n == null ? '—' : Number(n).toLocaleString('pt-BR'))
+// A conclusão sai da razão medida neste clique, nunca de uma frase fixa.
+const conclusao = (razao) => {
+  const x = (v) => `${v.toFixed(1).replace('.', ',')}×`
+  if (razao >= 1.2) return `o nativo foi ${x(razao)} mais barato no servidor.`
+  if (razao <= 1 / 1.2) return `o Search foi ${x(1 / razao)} mais barato no servidor.`
+  return 'empate técnico no servidor (diferença abaixo de 20%).'
+}
 const fmtMs = (n) => (n == null ? '—' : `${Math.round(n).toLocaleString('pt-BR')} ms`)
 
 function CartaoMotor({ titulo, bloco, extra }) {
@@ -81,6 +88,7 @@ export default function PainelGeocerca({ municipios }) {
     .sort((a, b) => (divergentes.has(b._id) - divergentes.has(a._id)) || a._id.localeCompare(b._id))
     .slice(0, MAX_NO_MAPA)
     .map(t => ({ endToEndId: t._id, dispositivo: { id: t._id }, municipio: t.municipio, local: t.local }))
+  const rel = s?.relevancia
   const razao = r && s?.estado === 'ok' && r.nativo.plano?.ms_servidor && s.plano?.ms_servidor
     ? s.plano.ms_servidor / Math.max(r.nativo.plano.ms_servidor, 1)
     : null
@@ -99,8 +107,9 @@ export default function PainelGeocerca({ municipios }) {
       <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 14 }}>
         A geocerca é um polígono irregular sintético em volta do centro escolhido, não um limite real. Os dois caminhos
         rodam o mesmo filtro (polígono + categoria) e o mesmo <code>$group</code>; a resposta é comparada terminal a
-        terminal. No Search, o texto entra como <code>should</code> num <code>compound</code>: ordena por relevância e não
-        muda o conjunto. Em geocercas grandes (≈ 600 km em Sorocaba, Campinas ou Florianópolis, neste dataset) as bordas
+        terminal e a latência é medida com o mesmo trabalho dos dois lados (sem texto). O texto entra à parte, como
+        <code> should</code> num <code>compound</code> do Search: ordena por relevância, e o custo dessa pontuação aparece
+        separado, porque o nativo não a faz. Em geocercas grandes (≈ 600 km em Sorocaba, Campinas ou Florianópolis, neste dataset) as bordas
         divergem: o Search traça a aresta reta em lng/lat e o 2dsphere, geodésica. “Densificar bordas” põe um vértice a
         cada ~5 km e os dois voltam a concordar, ao custo de um polígono mais pesado.
       </p>
@@ -162,14 +171,22 @@ export default function PainelGeocerca({ municipios }) {
             <div>
               {s?.estado === 'ok' ? (
                 <CartaoMotor titulo="Atlas Search · compound + geoWithin" bloco={s} extra={
-                  s.relevancia?.length > 0 && (
+                  rel && (
                     <div style={{ fontSize: 12 }}>
-                      <small style={{ color: 'var(--text-secondary)' }}>mais relevantes para “{r.termo}” (o que só o Search faz):</small>
-                      <ul style={{ paddingLeft: 16, margin: '4px 0 0', lineHeight: 1.6 }}>
-                        {s.relevancia.map(x => (
-                          <li key={x.terminalId}>{x.nome} · {x.municipio} · score {x.score}</li>
-                        ))}
-                      </ul>
+                      <small style={{ color: 'var(--text-secondary)' }}>
+                        à parte, o que só o Search faz: relevância para “{r.termo}” (<code>should: text</code>)
+                        {rel.plano && <> · {fmtMs(rel.plano.ms_servidor)} no servidor, contra {fmtMs(s.plano?.ms_servidor)} sem texto</>}
+                      </small>
+                      {rel.erro ? <p style={{ margin: '4px 0 0' }}>falhou: <code>{rel.erro}</code></p> : (
+                        <ul style={{ paddingLeft: 16, margin: '4px 0 0', lineHeight: 1.6 }}>
+                          {rel.resultados.map(x => (
+                            <li key={x.terminalId}>{x.nome} · {x.municipio} · score {x.score}</li>
+                          ))}
+                          {rel.resultados.length === 0 && <li>nenhum nome casou com o termo</li>}
+                        </ul>
+                      )}
+                      <QueryBlock label="Pipeline executado (relevância, à parte)"
+                        query={`db.transacoes.aggregate(${JSON.stringify(rel.pipeline, null, 2)})`} />
                     </div>
                   )} />
               ) : (
@@ -187,13 +204,11 @@ export default function PainelGeocerca({ municipios }) {
           {razao != null && (
             <p className="geo-nota-seletividade" style={{ marginTop: 12 }}>
               No servidor, o nativo levou {fmtMs(r.nativo.plano.ms_servidor)} e o Search, {fmtMs(s.plano.ms_servidor)}
-              {' '}({razao >= 1 ? `${razao.toFixed(1).replace('.', ',')}× o nativo` : 'menos que o nativo'}).
+              {' '}com o mesmo trabalho: {conclusao(razao)}
               {r.nativo.plano?.indice_usado && <> O nativo usou <code>{r.nativo.plano.indice_usado}</code>.</>}
-              {' '}{r.vertices <= 20
-                ? 'Para polígono simples + igualdade, o 2dsphere com índice composto costuma bastar; o Search se paga quando a pergunta tem texto, relevância ou facetas.'
-                : `Com ${r.vertices} vértices, o custo do 2dsphere cresce com o polígono; no Search, menos.`}
               {' '}A parede inclui a rede até o cluster; medido agora, varia com cache.
-              O explain roda o mesmo pipeline em <code>explain("executionStats")</code>.
+              Um explain por motor por clique: oscila. A medição repetida (mediana) está em
+              <code> scripts/bench_geo.py --geocerca</code>.
             </p>
           )}
 

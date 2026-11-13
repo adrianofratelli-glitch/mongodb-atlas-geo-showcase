@@ -151,12 +151,16 @@ checkbox "densificar bordas" e botão "Comparar os dois motores" → `POST
   compras" ou laranja "Respostas diferentes", com os ids só no nativo / só
   no Search / compras divergentes e a explicação da borda reta × geodésica.
 - Dois cartões: terminais, compras, servidor (explain), parede p50, primeiro
-  estágio; no nativo também índice e chaves/docs examinados. No Search, a
-  lista "mais relevantes para o termo" (um por terminal, score > 0). Cada
-  cartão tem o `QueryBlock` do pipeline executado. Sem índice `READY`, o
-  cartão do Search vira aviso e o nativo continua medido.
-- Nota com os dois tempos de servidor e a razão; o texto muda com a
-  complexidade do polígono, sem conclusão fixa.
+  estágio; no nativo também índice e chaves/docs examinados. Os dois
+  pipelines comparados fazem o mesmo trabalho (sem texto). No Search, à
+  parte, a relevância para o termo (`should: text`): tempo no servidor contra
+  o Search sem texto, os 5 terminais mais relevantes (score > 0) e o próprio
+  `QueryBlock`. Cada cartão tem o `QueryBlock` do pipeline executado. Sem
+  índice `READY`, ou se a execução/explain do Search falhar, o cartão do
+  Search vira aviso e o nativo continua medido.
+- Nota com os dois tempos de servidor; a conclusão ("nativo N× mais barato",
+  "Search N× mais barato" ou "empate técnico", abaixo de 20%) sai da razão
+  medida no clique. A medição repetida fica em `scripts/bench_geo.py`.
 - Mapa (`MapaConsulta`) com o polígono e até 24 terminais: os divergentes
   primeiro.
 

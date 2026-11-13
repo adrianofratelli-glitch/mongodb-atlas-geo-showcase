@@ -1166,33 +1166,9 @@ class GeocercaRequest(BaseModel):
     densificar: bool = False
 
 
-@router.post("/geocerca-comparar")
-def geocerca_comparar(pedido: GeocercaRequest):
-    """Demo D — a mesma geocerca respondida pelo 2dsphere nativo e pelo Atlas Search.
-
-    Pergunta: "quais terminais da categoria X estão dentro desta zona, e com
-    quantas compras?". Os dois pipelines terminam no mesmo `$group`, então a
-    resposta é comparável terminal a terminal. Cada motor roda `execucoes`
-    vezes, alternados (latência de parede, inclui a rede), e um `explain`
-    (tempo no servidor). A MQL devolvida é a que foi executada.
-
-    O texto, quando há, fica no `should` do `compound`: soma relevância e não
-    filtra. Com o filtro igual, o conjunto tem de ser o mesmo; se não for, a
-    divergência aparece na resposta (borda cartesiana do Search × geodésica do
-    2dsphere), sem ajuste.
-    """
-    lng, lat = pedido.centro
-    if not (-180 <= lng <= 180 and -90 <= lat <= 90):
-        raise HTTPException(status_code=422, detail="centro fora do intervalo [lng, lat] válido.")
-    if pedido.categoria not in CATEGORIAS_DATASET:
-        raise HTTPException(status_code=422, detail=f"categoria deve ser uma de {', '.join(CATEGORIAS_DATASET)}.")
-
-    poligono = _poligono_geocerca(pedido.centro, pedido.raioKm)
-    if pedido.densificar:
-        poligono = _densificar_anel(poligono)
-    termo = pedido.termo.strip()
-    # O mesmo agrupamento nos dois caminhos: é ele que torna a resposta comparável.
-    agrupar = [
+def _agrupar_por_terminal() -> list[dict]:
+    """O mesmo `$group` nos dois motores: é ele que torna a resposta comparável."""
+    return [
         {"$group": {
             "_id": "$dispositivo.id",
             "compras": {"$sum": 1},
@@ -1204,23 +1180,38 @@ def geocerca_comparar(pedido: GeocercaRequest):
         {"$sort": {"_id": 1}},
     ]
 
-    pipeline_nativo = [
-        {"$match": {
-            "estabelecimento.categoria": pedido.categoria,
-            "local": {"$geoWithin": {"$geometry": poligono}},
-        }},
-        *agrupar,
-    ]
 
-    compound: dict[str, Any] = {"filter": [
+def _pipelines_geocerca(poligono: dict, categoria: str, termo: str = "") -> dict[str, list[dict] | None]:
+    """Os pipelines da geocerca, montados num lugar só (endpoint e bench usam estes).
+
+    - `nativo` e `search`: o MESMO trabalho (filtro polígono + categoria e o
+      mesmo `$group`). São estes que entram na comparação de resposta e de
+      latência; sem texto, nenhum dos lados pontua.
+    - `relevancia` (só com termo): o `compound` com o texto como `should`.
+      Pontuar e ordenar é trabalho que o nativo não faz, por isso é medido à
+      parte, como custo extra do Search, e não entra na comparação.
+    """
+    filtro_search = [
         {"geoWithin": {"path": "local", "geometry": poligono}},
-        {"in": {"path": "estabelecimento.categoria", "value": [pedido.categoria]}},
-    ]}
-    facetas: dict[str, list[dict]] = {"terminais": agrupar}
+        {"in": {"path": "estabelecimento.categoria", "value": [categoria]}},
+    ]
+    nativo = [
+        {"$match": {"estabelecimento.categoria": categoria, "local": {"$geoWithin": {"$geometry": poligono}}}},
+        *_agrupar_por_terminal(),
+    ]
+    search = [
+        {"$search": {"index": GEO_GEOCERCA_INDEX, "compound": {"filter": filtro_search},
+                     "returnStoredSource": True}},
+        *_agrupar_por_terminal(),
+    ]
+    relevancia = None
     if termo:
-        compound["should"] = [{"text": {"query": termo, "path": "estabelecimento.nome", "fuzzy": {"maxEdits": 1}}}]
-        # Um por terminal: as compras do mesmo terminal empatam no score.
-        facetas["relevancia"] = [
+        relevancia = [
+            {"$search": {"index": GEO_GEOCERCA_INDEX, "compound": {
+                "filter": filtro_search,
+                "should": [{"text": {"query": termo, "path": "estabelecimento.nome", "fuzzy": {"maxEdits": 1}}}],
+            }, "returnStoredSource": True}},
+            # Um por terminal: as compras do mesmo terminal empatam no score.
             {"$group": {
                 "_id": "$dispositivo.id",
                 "nome": {"$first": "$estabelecimento.nome"},
@@ -1234,35 +1225,100 @@ def geocerca_comparar(pedido: GeocercaRequest):
             {"$project": {"_id": 0, "terminalId": "$_id", "nome": 1, "municipio": 1,
                           "score": {"$round": ["$score", 3]}}},
         ]
-    pipeline_search = [
-        {"$search": {"index": GEO_GEOCERCA_INDEX, "compound": compound, "returnStoredSource": True}},
-        {"$facet": facetas},
-    ]
+    return {"nativo": nativo, "search": search, "relevancia": relevancia}
+
+
+def _msg_erro(erro: OperationFailure) -> str:
+    return (erro.details or {}).get("errmsg", str(erro))
+
+
+def comparar_terminais(nativo: list[dict], search: list[dict]) -> dict[str, Any]:
+    """Resposta dos dois motores, terminal a terminal (usado também pelo bench)."""
+    por_id_nativo = {t["_id"]: t.get("compras") for t in nativo}
+    por_id_search = {t["_id"]: t.get("compras") for t in search}
+    return {
+        "mesmo_conjunto": set(por_id_nativo) == set(por_id_search),
+        "mesmas_compras": por_id_nativo == por_id_search,
+        "so_nativo": sorted(set(por_id_nativo) - set(por_id_search)),
+        "so_search": sorted(set(por_id_search) - set(por_id_nativo)),
+        "compras_divergentes": sorted(
+            i for i in set(por_id_nativo) & set(por_id_search) if por_id_nativo[i] != por_id_search[i]
+        ),
+    }
+
+
+@router.post("/geocerca-comparar")
+def geocerca_comparar(pedido: GeocercaRequest):
+    """Demo D — a mesma geocerca respondida pelo 2dsphere nativo e pelo Atlas Search.
+
+    Pergunta: "quais terminais da categoria X estão dentro desta zona, e com
+    quantas compras?". Os pipelines comparados fazem o mesmo trabalho (filtro +
+    `$group`, sem pontuação): a resposta é comparável terminal a terminal e a
+    latência, justa. Cada motor roda `execucoes` vezes, alternados (parede,
+    inclui a rede), e um `explain` (servidor). Com termo, o `compound` com o
+    texto como `should` roda à parte, uma vez e em explain: é o custo extra da
+    relevância, que só o Search tem. A MQL devolvida é a que foi executada.
+
+    Se o conjunto divergir, a divergência aparece na resposta (borda
+    cartesiana do Search × geodésica do 2dsphere), sem ajuste. Falha do lado
+    Search degrada só o cartão dele: o nativo continua medido.
+    """
+    lng, lat = pedido.centro
+    if not (-180 <= lng <= 180 and -90 <= lat <= 90):
+        raise HTTPException(status_code=422, detail="centro fora do intervalo [lng, lat] válido.")
+    if pedido.categoria not in CATEGORIAS_DATASET:
+        raise HTTPException(status_code=422, detail=f"categoria deve ser uma de {', '.join(CATEGORIAS_DATASET)}.")
+
+    poligono = _poligono_geocerca(pedido.centro, pedido.raioKm)
+    if pedido.densificar:
+        poligono = _densificar_anel(poligono)
+    termo = pedido.termo.strip()
+    pipelines = _pipelines_geocerca(poligono, pedido.categoria, termo)
+    pipeline_nativo, pipeline_search, pipeline_relevancia = (
+        pipelines["nativo"], pipelines["search"], pipelines["relevancia"])
 
     search_ok, search_msg = _estado_search_index(GEO_GEOCERCA_INDEX)
-
+    erro_search = None if search_ok else search_msg
     tempos_nativo: list[float] = []
     tempos_search: list[float] = []
     nativo_saida: list[dict] = []
-    search_saida: dict[str, Any] = {}
-    erro_search = None
+    search_saida: list[dict] = []
+
     try:
         for _ in range(pedido.execucoes):
             inicio = time.perf_counter()
             nativo_saida = list(colecao.aggregate(pipeline_nativo, maxTimeMS=20_000))
             tempos_nativo.append((time.perf_counter() - inicio) * 1000)
-            if search_ok and erro_search is None:
+            if erro_search is None:
                 inicio = time.perf_counter()
                 try:
-                    search_saida = (list(colecao.aggregate(pipeline_search, maxTimeMS=20_000)) or [{}])[0]
+                    search_saida = list(colecao.aggregate(pipeline_search, maxTimeMS=20_000))
                 except OperationFailure as erro:
-                    erro_search = erro.details.get("errmsg", str(erro)) if erro.details else str(erro)
+                    erro_search = _msg_erro(erro)
                 else:
                     tempos_search.append((time.perf_counter() - inicio) * 1000)
         plano_nativo = _explain_agregacao(pipeline_nativo)
-        plano_search = _explain_agregacao(pipeline_search) if search_ok and erro_search is None else None
     except OperationFailure as erro:
-        raise HTTPException(status_code=409, detail=f"Geocerca falhou: {erro.details.get('errmsg', str(erro))}")
+        raise HTTPException(status_code=409, detail=f"Geocerca falhou: {_msg_erro(erro)}")
+
+    # Lado Search: explain e relevância degradam só o cartão do Search.
+    plano_search = None
+    relevancia: dict[str, Any] | None = None
+    if erro_search is None:
+        try:
+            plano_search = _explain_agregacao(pipeline_search)
+        except OperationFailure as erro:
+            erro_search = f"explain do $search falhou: {_msg_erro(erro)}"
+    if erro_search is None and pipeline_relevancia:
+        try:
+            inicio = time.perf_counter()
+            top = list(colecao.aggregate(pipeline_relevancia, maxTimeMS=20_000))
+            parede = (time.perf_counter() - inicio) * 1000
+            plano_rel = _explain_agregacao(pipeline_relevancia)
+            relevancia = {"pipeline": pipeline_relevancia, "resultados": top,
+                          "ms_parede": round(parede, 1), "plano": plano_rel}
+        except OperationFailure as erro:
+            relevancia = {"pipeline": pipeline_relevancia, "erro": _msg_erro(erro), "resultados": []}
 
     def _bloco(terminais: list[dict], tempos: list[float], plano: dict | None) -> dict[str, Any]:
         return {
@@ -1274,40 +1330,17 @@ def geocerca_comparar(pedido: GeocercaRequest):
             "plano": plano,
         }
 
-    nativo = {
-        "motor": "2dsphere nativo",
-        "pipeline": pipeline_nativo,
-        **_bloco(nativo_saida, tempos_nativo, plano_nativo),
-    }
-    if not search_ok:
-        search = {"motor": "Atlas Search", "estado": "nao_configurado", "mensagem": search_msg,
-                  "index": GEO_GEOCERCA_INDEX, "pipeline": pipeline_search}
-        comparacao = None
-    elif erro_search:
-        search = {"motor": "Atlas Search", "estado": "erro", "mensagem": erro_search,
-                  "index": GEO_GEOCERCA_INDEX, "pipeline": pipeline_search}
+    nativo = {"motor": "2dsphere nativo", "pipeline": pipeline_nativo,
+              **_bloco(nativo_saida, tempos_nativo, plano_nativo)}
+    if erro_search is not None:
+        search = {"motor": "Atlas Search", "estado": "nao_configurado" if not search_ok else "erro",
+                  "mensagem": erro_search, "index": GEO_GEOCERCA_INDEX, "pipeline": pipeline_search}
         comparacao = None
     else:
-        terminais_search = search_saida.get("terminais", [])
-        search = {
-            "motor": "Atlas Search",
-            "estado": "ok",
-            "index": GEO_GEOCERCA_INDEX,
-            "pipeline": pipeline_search,
-            "relevancia": search_saida.get("relevancia", []),
-            **_bloco(terminais_search, tempos_search, plano_search),
-        }
-        por_id_nativo = {t["_id"]: t.get("compras") for t in nativo_saida}
-        por_id_search = {t["_id"]: t.get("compras") for t in terminais_search}
-        comparacao = {
-            "mesmo_conjunto": set(por_id_nativo) == set(por_id_search),
-            "mesmas_compras": por_id_nativo == por_id_search,
-            "so_nativo": sorted(set(por_id_nativo) - set(por_id_search)),
-            "so_search": sorted(set(por_id_search) - set(por_id_nativo)),
-            "compras_divergentes": sorted(
-                i for i in set(por_id_nativo) & set(por_id_search) if por_id_nativo[i] != por_id_search[i]
-            ),
-        }
+        search = {"motor": "Atlas Search", "estado": "ok", "index": GEO_GEOCERCA_INDEX,
+                  "pipeline": pipeline_search, "relevancia": relevancia,
+                  **_bloco(search_saida, tempos_search, plano_search)}
+        comparacao = comparar_terminais(nativo_saida, search_saida)
 
     return {
         "pergunta": (

@@ -365,39 +365,49 @@ db.transacoes.aggregate([
 ])
 ```
 
-Atlas Search (índice próprio `idx_geo_geocerca`):
+Atlas Search (índice próprio `idx_geo_geocerca`), com o mesmo trabalho do
+nativo (é este que entra na comparação de resposta e de latência):
+
+```js
+db.transacoes.aggregate([
+  { $search: {
+      index: "idx_geo_geocerca",
+      compound: { filter: [
+        { geoWithin: { path: "local", geometry: { type: "Polygon", coordinates: [[ /* o mesmo anel */ ]] } } },
+        { in: { path: "estabelecimento.categoria", value: ["<categoria>"] } }
+      ] },
+      returnStoredSource: true
+  } },
+  /* o mesmo $group + $sort do nativo */
+])
+```
+
+Só com termo, à parte (custo extra da relevância, que o nativo não tem; os
+três pipelines saem de `_pipelines_geocerca`):
 
 ```js
 db.transacoes.aggregate([
   { $search: {
       index: "idx_geo_geocerca",
       compound: {
-        filter: [
-          { geoWithin: { path: "local", geometry: { type: "Polygon", coordinates: [[ /* o mesmo anel */ ]] } } },
-          { in: { path: "estabelecimento.categoria", value: ["<categoria>"] } }
-        ],
-        // só com termo: soma relevância, não filtra (o conjunto continua o mesmo)
+        filter: [ /* o mesmo filter acima */ ],
+        // soma relevância, não filtra
         should: [ { text: { query: "<termo>", path: "estabelecimento.nome", fuzzy: { maxEdits: 1 } } } ]
       },
       returnStoredSource: true
   } },
-  { $facet: {
-      terminais: [ /* o mesmo $group + $sort do nativo */ ],
-      // só com termo: um por terminal, score > 0, top 5
-      relevancia: [
-        { $group: { _id: "$dispositivo.id", nome: { $first: "$estabelecimento.nome" },
-                    municipio: { $first: "$municipio" }, score: { $max: { $meta: "searchScore" } } } },
-        { $match: { score: { $gt: 0 } } }, { $sort: { score: -1, _id: 1 } }, { $limit: 5 },
-        { $project: { _id: 0, terminalId: "$_id", nome: 1, municipio: 1, score: { $round: ["$score", 3] } } }
-      ]
-  } }
+  { $group: { _id: "$dispositivo.id", nome: { $first: "$estabelecimento.nome" },
+              municipio: { $first: "$municipio" }, score: { $max: { $meta: "searchScore" } } } },
+  { $match: { score: { $gt: 0 } } }, { $sort: { score: -1, _id: 1 } }, { $limit: 5 },
+  { $project: { _id: 0, terminalId: "$_id", nome: 1, municipio: 1, score: { $round: ["$score", 3] } } }
 ])
 ```
 
 Antes do `$search`, `_estado_search_index` lê `list_search_indexes` e exige
 `status: "READY"` e `queryable`; caso contrário o Search não roda (índice
-ausente ou em BUILDING devolveria vazio sem erro). Cada pipeline roda
-`execucoes` vezes (padrão 3, alternados) e uma vez em `explain`
+ausente ou em BUILDING devolveria vazio sem erro). Nativo e Search rodam
+`execucoes` vezes (padrão 3, alternados) e uma vez em `explain`; a relevância,
+uma vez e uma vez em `explain`
 (`executionStats`); `_resumo_explain_agregacao` extrai só números (o bloco
 do mongot traz o host do nó). A resposta devolve os pipelines exatos que
 foram executados.
@@ -415,11 +425,13 @@ foram executados.
 }
 ```
 
-**Medido** (geo_f4_test, 2026-11-13): mesma resposta em 117 de 120 geocercas
-(40 municípios × 8/60/600 km); as 3 divergentes têm 600 km (1–3 terminais só
-no Search, borda reta × geodésica) e se alinham densificando. Servidor:
-nativo 37–110 ms × Search 84–227 ms em polígono de 7 vértices; com ~600
-vértices, nativo 380 ms × Search 238 ms.
+**Medido** (geo_f4_test, 2026-11-13, `GEO_DB=geo_f4_test backend/venv/bin/python scripts/bench_geo.py --geocerca --varredura --runs 5`): mesma
+resposta em 117 de 120 geocercas (40 municípios × 8/60/600 km); as 3
+divergentes têm 600 km (1–3 terminais só no Search, borda reta × geodésica) e
+densificando dá 120/120. Servidor, com o mesmo trabalho dos dois lados (sem
+texto), mediana de 5 explains: nativo 30–109 ms × Search 72–139 ms em
+polígono de 7 vértices (Search ÷ nativo 2,4× a 1,3×); com 598 vértices,
+nativo 358 ms × Search 210 ms (0,6×). A relevância à parte custa 84–242 ms.
 
 ## `GET /geo/sinais-ao-vivo` (código herdado, não chamado pelo frontend)
 

@@ -70,7 +70,7 @@ React 19 + Vite (frontend/, :5184) --fetch--> FastAPI (backend/main.py, :8184) -
 | `backend/database.py` | Instancia o `MongoClient` único (`connect=False`, lazy) e expõe `readiness()` para o healthcheck. |
 | `backend/security.py` | `MutationGuardMiddleware` (bloqueia mutação fora de loopback sem `DEMO_ADMIN_TOKEN`) e `ApiHardeningMiddleware` (teto de tamanho de corpo, headers `nosniff`/`DENY`/`no-referrer`/`no-store`). |
 | `backend/routers/geo.py` | Todo o domínio da PoV: os 4 painéis + `status`, `municipios`, `sinais-ao-vivo` (código herdado, não usado pelo frontend deste repo). |
-| `backend/tests/test_geo.py` | 52 testes unitários, Mongo stubado via monkeypatch — roda sem cluster ao vivo. |
+| `backend/tests/test_geo.py` | 53 testes unitários, Mongo stubado via monkeypatch — roda sem cluster ao vivo. |
 | `backend/tests_live/test_live_geo.py` | 8 testes contra um banco `*_test` real (só com `GEO_LIVE=1`): IXSCAN, `$geoNear` igual ao círculo, 40/40 plantados, raio do `$search`, rotas, geocerca igual nos dois motores e alinhada após densificar. |
 | `scripts/bench_geo.py` | Latência por fluxo (parede p50/p95 e tempo no servidor via explain), somente leitura. |
 
@@ -160,8 +160,10 @@ Atlas. Ver `docs/briefing/queries.md` para o detalhe de cada uma.
 
 - **Por que a geocerca compara dois motores em vez de escolher um?**
   Porque a resposta depende da pergunta, e a tela mede em vez de afirmar.
-  Polígono simples + igualdade: o 2dsphere com índice composto é 2–3× mais
-  barato no servidor. Polígono de centenas de vértices: a ordem se inverte.
+  Com o mesmo trabalho dos dois lados (sem texto), polígono simples +
+  igualdade: o 2dsphere com índice composto fica ≈ 2× mais barato no servidor
+  até 60 km (1,9–2,4×) e 1,3× a 600 km; com 598 vértices a ordem se inverte
+  (Search 0,6×). Medido com `scripts/bench_geo.py --geocerca --varredura`.
   Texto, relevância ou facetas: só o Search faz. As bordas divergem em
   geocercas grandes (Search = reta lng/lat, 2dsphere = geodésica), e a tela
   mostra os terminais afetados; densificar alinha (ADR 0003). Geo + vetor

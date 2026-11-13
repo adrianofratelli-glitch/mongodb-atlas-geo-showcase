@@ -31,7 +31,7 @@ UI text, docstrings, and error messages are in Brazilian Portuguese by design (B
 
 ![Explain of two indexes side by side and the Atlas Search panel with text, radius, and facets](docs/screenshots/04-index-and-search.png)
 
-**5. Geofence: native 2dsphere vs. Atlas Search.** One synthetic heptagon around the chosen center, one category, both engines. Across 40 municipalities × 3 sizes (8/60/600 km), 117 of 120 answers matched terminal by terminal. The 3 mismatches are all 600 km fences: Atlas Search draws polygon edges as straight lines in lng/lat, while 2dsphere uses geodesic arcs, so a terminal near a long edge lands inside one and outside the other. "Densify edges" (a vertex every ~5.5 km) makes them agree. For a simple polygon plus an equality filter, the native compound index is 2–3× cheaper on the server; Search earns its place when the question adds text relevance or facets.
+**5. Geofence: native 2dsphere vs. Atlas Search.** One synthetic heptagon around the chosen center, one category, both engines. Across 40 municipalities × 3 sizes (8/60/600 km), 117 of 120 answers matched terminal by terminal (120 of 120 with densified edges; `scripts/bench_geo.py --geocerca --varredura`). The 3 mismatches are all 600 km fences: Atlas Search draws polygon edges as straight lines in lng/lat, while 2dsphere uses geodesic arcs, so a terminal near a long edge lands inside one and outside the other. "Densify edges" (a vertex every ~5.5 km) makes them agree. With the same work on both sides (no text), the native compound index is about 2× cheaper on the server for fences up to 60 km (1.9–2.4×) and 1.3× at 600 km; with 598 vertices the order flips (Search 0.6×). Over the network the two tie. Search earns its place when the question adds text relevance or facets, measured separately.
 
 ![Geofence panel: native 2dsphere and Atlas Search side by side with the verdict, measurements, and the fence on the map](docs/screenshots/05-geofence.png)
 
@@ -147,15 +147,15 @@ The seed records the customer IDs whose pairs were planted in `demo_metadata` (w
 
 Read it as: per customer, the window pipeline costs about 2 ms on the server and the rest is round trips. The full scan is the expensive investigation mode (2.7 s for 150k documents on this tier), which is why production filters by customer or period before the window. These numbers describe this cluster and network, not a sizing.
 
-Geofence panel (2026-11-13, `geo_f4_test`, pharmacy category, term "drogaria"; median of 3 server explains, wall p50 of 5 runs):
+Geofence panel (2026-11-13, `geo_f4_test`, pharmacy category, RTT ≈ 375 ms). Both engines do the same work (polygon + category + the same `$group`, no text); server = median of 5 explains, wall = p50 of 5 runs. The last column is the extra Search pipeline with the term "drogaria" as a `should` (relevance scoring, top 5 per terminal), work the native side does not do, so it stays out of the comparison. Reproduce with `GEO_DB=geo_f4_test backend/venv/bin/python scripts/bench_geo.py --geocerca --varredura --runs 5`:
 
-| geofence | vertices | terminals native / Search | same answer | native server (ms) | Search server (ms) | native wall p50 (ms) | Search wall p50 (ms) |
-|---|---:|---:|---|---:|---:|---:|---:|
-| São Paulo ≈ 8 km | 7 | 8 / 8 | yes | 37 | 84 | 294 | 316 |
-| São Paulo ≈ 15 km | 7 | 24 / 24 | yes | 50 | 130 | 307 | 348 |
-| São Paulo ≈ 60 km | 7 | 48 / 48 | yes | 50 | 142 | 344 | 369 |
-| Sorocaba ≈ 600 km | 7 | 163 / 166 | no (3 Search-only) | 110 | 227 | 655 | 578 |
-| Sorocaba ≈ 600 km, densified | 598 | 166 / 166 | yes | 380 | 238 | 1,113 | 679 |
+| geofence | vertices | terminals native / Search | same answer | native server (ms) | Search server (ms) | Search ÷ native | native wall p50 (ms) | Search wall p50 (ms) | relevance server (ms) |
+|---|---:|---:|---|---:|---:|---:|---:|---:|---:|
+| São Paulo ≈ 8 km | 7 | 8 / 8 | yes | 30 | 72 | 2.4× | 413 | 416 | 84 |
+| São Paulo ≈ 15 km | 7 | 24 / 24 | yes | 46 | 92 | 2.0× | 419 | 433 | 105 |
+| São Paulo ≈ 60 km | 7 | 48 / 48 | yes | 50 | 97 | 1.9× | 440 | 447 | 125 |
+| Sorocaba ≈ 600 km | 7 | 163 / 166 | no (3 Search-only) | 109 | 139 | 1.3× | 1,049 | 1,043 | 204 |
+| Sorocaba ≈ 600 km, densified | 598 | 166 / 166 | yes | 358 | 210 | 0.6× | 1,471 | 1,254 | 242 |
 
 ## Technical pitfalls
 

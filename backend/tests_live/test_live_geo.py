@@ -119,7 +119,9 @@ def test_geocerca_nativo_e_search_dao_a_mesma_resposta():
     assert r["nativo"]["n_terminais"] > 0
     assert r["comparacao"]["mesmas_compras"] is True
     assert r["nativo"]["plano"]["indice_usado"] == "categoria_local_idx"
-    assert all(x["score"] > 0 for x in r["search"]["relevancia"])
+    rel = r["search"]["relevancia"]
+    assert rel["resultados"] and all(x["score"] > 0 for x in rel["resultados"])
+    assert rel["plano"]["ms_servidor"] is not None
 
 
 def test_geocerca_grande_densificada_alinha_os_dois_motores():

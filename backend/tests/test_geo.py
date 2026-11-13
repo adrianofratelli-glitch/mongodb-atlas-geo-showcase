@@ -864,16 +864,22 @@ class _ColecaoGeocerca:
     def aggregate(self, pipeline, **_kw):
         self.executados.append(pipeline)
         if "$search" in pipeline[0]:
-            return [{"terminais": self.search, "relevancia": []}]
+            if "should" in pipeline[0]["$search"]["compound"]:
+                return [{"terminalId": "POS1", "nome": "Drogaria", "municipio": "X", "score": 1.2}]
+            return list(self.search)
         return list(self.nativo)
 
 
 class _BancoExplain:
-    def __init__(self):
+    def __init__(self, falha_no_search=False):
         self.explicados: list[list[dict]] = []
+        self.falha_no_search = falha_no_search
 
     def command(self, comando):
-        self.explicados.append(comando["explain"]["pipeline"])
+        pipeline = comando["explain"]["pipeline"]
+        self.explicados.append(pipeline)
+        if self.falha_no_search and "$search" in pipeline[0]:
+            raise geo.OperationFailure("mongot fora", details=None)
         return {"stages": [{"$x": {}, "nReturned": 1, "executionTimeMillisEstimate": 1}]}
 
 
@@ -900,16 +906,22 @@ def test_geocerca_exibe_os_pipelines_executados_e_compara_terminal_a_terminal(mo
 
     r = geo.geocerca_comparar(_pedido_geocerca())
 
+    relevancia = r["search"]["relevancia"]
     # A MQL na tela é exatamente a enviada ao servidor (execuções e explain).
-    assert colecao.executados == [r["nativo"]["pipeline"], r["search"]["pipeline"]] * 2
-    assert banco.explicados == [r["nativo"]["pipeline"], r["search"]["pipeline"]]
+    assert colecao.executados == [r["nativo"]["pipeline"], r["search"]["pipeline"]] * 2 + [relevancia["pipeline"]]
+    assert banco.explicados == [r["nativo"]["pipeline"], r["search"]["pipeline"], relevancia["pipeline"]]
     busca = r["search"]["pipeline"][0]["$search"]
     assert busca["index"] == geo.GEO_GEOCERCA_INDEX and busca["returnStoredSource"] is True
-    # Mesmo filtro nos dois motores; o texto só no `should`, sem filtrar.
+    # Comparação justa: mesmo filtro e mesmo $group nos dois, sem pontuação.
+    assert busca["compound"] == {"filter": busca["compound"]["filter"]}
     assert busca["compound"]["filter"][0]["geoWithin"]["geometry"] == r["poligono"]
     assert r["nativo"]["pipeline"][0]["$match"]["local"]["$geoWithin"]["$geometry"] == r["poligono"]
-    assert busca["compound"]["should"][0]["text"]["query"] == "drogaria"
-    assert "must" not in busca["compound"]
+    assert r["nativo"]["pipeline"][1:] == r["search"]["pipeline"][1:]
+    # O texto só no pipeline de relevância, como `should`, medido à parte.
+    rel = relevancia["pipeline"][0]["$search"]["compound"]
+    assert rel["should"][0]["text"]["query"] == "drogaria" and "must" not in rel
+    assert rel["filter"] == busca["compound"]["filter"]
+    assert relevancia["plano"]["ms_servidor"] == 1 and relevancia["resultados"][0]["terminalId"] == "POS1"
     assert r["comparacao"]["mesmas_compras"] is True
     assert r["nativo"]["compras"] == 4 and len(r["nativo"]["ms_parede"]) == 2
 
@@ -922,7 +934,18 @@ def test_geocerca_mostra_a_divergencia_sem_ajustar(monkeypatch):
     r = geo.geocerca_comparar(_pedido_geocerca(termo=""))
     assert r["comparacao"]["mesmo_conjunto"] is False
     assert r["comparacao"]["so_search"] == ["POS9"] and r["comparacao"]["so_nativo"] == []
-    assert "should" not in r["search"]["pipeline"][0]["$search"]["compound"]
+    assert r["search"]["relevancia"] is None
+    assert all("should" not in p[0].get("$search", {}).get("compound", {}) for p in colecao.executados)
+
+
+def test_geocerca_explain_do_search_falha_e_so_o_search_degrada(monkeypatch):
+    colecao = _ColecaoGeocerca([{"_id": "POS1", "compras": 3}], [{"_id": "POS1", "compras": 3}])
+    monkeypatch.setattr(geo, "colecao", colecao)
+    monkeypatch.setattr(geo, "banco", _BancoExplain(falha_no_search=True))
+    r = geo.geocerca_comparar(_pedido_geocerca())
+    assert r["nativo"]["n_terminais"] == 1 and r["nativo"]["plano"]["ms_servidor"] == 1
+    assert r["search"]["estado"] == "erro" and "mongot fora" in r["search"]["mensagem"]
+    assert r["comparacao"] is None
 
 
 def test_geocerca_sem_indice_ready_nao_roda_search_e_mede_o_nativo(monkeypatch):
