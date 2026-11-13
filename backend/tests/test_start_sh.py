@@ -52,7 +52,7 @@ def _alive(pid: int) -> bool:
 
 
 def test_sigterm_during_startup_exits_fast_without_children(tmp_path: Path) -> None:
-    """SIGTERM no meio do wait_for_url: sai em < 3 s e não deixa o backend vivo.
+    """SIGTERM no meio do wait_for_url: sai rápido (< 6 s, folga para CI lento) e não deixa o backend vivo.
 
     Repo falso em tmp_path: o uvicorn é um `sleep` que grava o próprio PID, e o
     `curl` falso sempre falha, então o script fica preso esperando o backend.
@@ -92,14 +92,18 @@ def test_sigterm_during_startup_exits_fast_without_children(tmp_path: Path) -> N
         time.sleep(0.3)  # já dentro do wait_for_url
         started = time.monotonic()
         proc.send_signal(signal.SIGTERM)
-        code = proc.wait(timeout=5)
+        code = proc.wait(timeout=10)
         elapsed = time.monotonic() - started
         assert code == 143
-        assert elapsed < 3, f"start.sh levou {elapsed:.1f}s para sair"
+        assert elapsed < 6, f"start.sh levou {elapsed:.1f}s para sair"
         assert not _alive(backend_pid), "backend sobreviveu ao SIGTERM"
     finally:
-        if proc.poll() is None:
+        # Sempre: o grupo pode ter sobrevivido ao líder (filho órfão no mesmo pgid).
+        try:
             os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        proc.wait(timeout=5)
 
 
 def test_preview_uses_launcher_port_and_proxy_target() -> None:

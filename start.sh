@@ -43,7 +43,11 @@ cleanup() {
   trap - EXIT INT TERM
   # Guarda os PIDs ANTES do TERM: depois dele o vite neto é reparentado ao
   # launchd e pgrep -P já não o acharia na passada do KILL.
-  TREE=($(tree_pids "$FRONTEND_PID") $(tree_pids "$BACKEND_PID"))
+  local pid
+  TREE=()
+  for pid in $(tree_pids "$FRONTEND_PID") $(tree_pids "$BACKEND_PID"); do
+    kill -0 "$pid" 2>/dev/null && TREE+=("$pid")  # só quem ainda existe
+  done
   [[ ${#TREE[@]} -eq 0 ]] && return 0
   kill -TERM "${TREE[@]}" 2>/dev/null || true
   sleep 1
