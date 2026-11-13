@@ -2,11 +2,12 @@
 
 Mapa do código: [docs/MAPA_DO_CODIGO.md](docs/MAPA_DO_CODIGO.md)
 
-An interactive PoV that proves real geospatial behavior in MongoDB Atlas against a real cluster, with no fraud-detection storytelling and no map for its own sake. Three panels:
+An interactive PoV that proves real geospatial behavior in MongoDB Atlas against a real cluster, with no fraud-detection storytelling and no map for its own sake. Four panels, each labeled on screen with the business question it answers (fraud by impossible travel, retail and logistics proximity, index cost, logistics and insurance geofencing; typical questions per industry, not customer cases):
 
 1. **Retrospective investigation** (`impossible-travel`): pairs of card-present purchases by the same customer that are too far apart for the time between them. `$setWindowFields` partitions by customer, `$shift` brings in the previous purchase, and the distance comes from a haversine computed in plain MQL operators, inside the cluster.
 2. **Geospatial query operators** (`operadores`): MongoDB's five geospatial operators/stages side by side over the same geometry: `$geoWithin`, `$geoIntersects`, `$near`, `$nearSphere`, and `$geoNear`.
 3. **Right index, and search with geo** (`explain-compare`, `search`): the same `$geoWithin` measured under two indexes with `explain("executionStats")`, and one Atlas Search `compound` combining fuzzy text, `near` proximity scoring, a `geoWithin` radius, and facets.
+4. **Geofence: same question, two engines** (`geocerca-comparar`): which terminals of a category fall inside a polygon, answered by the native 2dsphere index (`$geoWithin` `$geometry`) and by Atlas Search (`geoWithin` geometry in a `compound` with a category filter and a text `should`), with server time from `explain`, wall time, the executed pipelines, and the answer compared terminal by terminal ([ADR 0003](docs/adr/0003-geocerca-nativo-x-search.md)).
 
 This repository was extracted from the geo module (08) of [`mongodb-atlas-feature-showcase`](https://github.com/adrianofratelli-glitch/mongodb-atlas-feature-showcase) as a standalone PoV. React 19 + Vite frontend, FastAPI + PyMongo backend, MongoDB Atlas as the data layer. No LLM.
 
@@ -30,10 +31,14 @@ UI text, docstrings, and error messages are in Brazilian Portuguese by design (B
 
 ![Explain of two indexes side by side and the Atlas Search panel with text, radius, and facets](docs/screenshots/04-index-and-search.png)
 
+**5. Geofence: native 2dsphere vs. Atlas Search.** One synthetic heptagon around the chosen center, one category, both engines. Across 40 municipalities × 3 sizes (8/60/600 km), 117 of 120 answers matched terminal by terminal. The 3 mismatches are all 600 km fences: Atlas Search draws polygon edges as straight lines in lng/lat, while 2dsphere uses geodesic arcs, so a terminal near a long edge lands inside one and outside the other. "Densify edges" (a vertex every ~5.5 km) makes them agree. For a simple polygon plus an equality filter, the native compound index is 2–3× cheaper on the server; Search earns its place when the question adds text relevance or facets.
+
+![Geofence panel: native 2dsphere and Atlas Search side by side with the verdict, measurements, and the fence on the map](docs/screenshots/05-geofence.png)
+
 ## What this proves, and what it does not
 
 - **Proves:** real geospatial predicates (`$geoWithin`, `$geoIntersects`, `$near`, `$nearSphere`, `$geoNear`) running on the cluster with a `2dsphere` index (confirmed on screen and in `backend/tests_live`: IXSCAN, not COLLSCAN), that putting equality before geo in a compound index cuts examined keys by orders of magnitude, and a distance calculation (haversine) done entirely in MQL, without pulling data into the application.
-- **Does not prove:** it is not a fraud engine, it has no confirmed-fraud label (so no precision/recall can be computed), and it does no geometry algebra (no buffer/union/intersection/area; WGS84 only, no raster or topology). `$geoNear` must be the first stage of the pipeline; the `filter` of `$vectorSearch` rejects geospatial operators.
+- **Does not prove:** it is not a fraud engine, it has no confirmed-fraud label (so no precision/recall can be computed), and it does no geometry algebra (no buffer/union/intersection/area; WGS84 only, no raster or topology). `$geoNear` must be the first stage of the pipeline; the `filter` of `$vectorSearch` has no geospatial predicate (geo + vector is not shown: the dataset has no text worth embedding; see ADR 0003).
 
 ## Commands
 
@@ -84,7 +89,7 @@ Live tests and latency, against a seeded `*_test` database (read-only; `GEO_DB` 
 ```bash
 GEO_DB=geo_test python scripts/seed_geo.py                 # no ALLOW_DEMO_DB_WRITE needed for *_test
 GEO_DB=geo_test ./scripts/create_search_index_geo.sh
-GEO_LIVE=1 GEO_DB=geo_test python -m pytest backend/tests_live   # IXSCAN, $geoNear == circle, 40/40 planted, $search radius
+GEO_LIVE=1 GEO_DB=geo_test python -m pytest backend/tests_live   # IXSCAN, $geoNear == circle, 40/40 planted, $search radius, geofence native == Search
 GEO_DB=geo_test python scripts/bench_geo.py --runs 7       # wall p50/p95 and server time (explain)
 ```
 
@@ -115,7 +120,7 @@ Same `--env-file` rule as above (`KEY=value`, no quotes); tags: `latest` and `sh
 Copy `backend/.env.example` to `backend/.env`:
 
 - `MONGO_URI`, `MONGO_DB` (default `POC`), `MONGO_TIMEOUT_MS`.
-- `GEO_DB` (default `geo`), `GEO_SEARCH_INDEX` (default `idx_geo_estabelecimento`).
+- `GEO_DB` (default `geo`), `GEO_SEARCH_INDEX` (default `idx_geo_estabelecimento`), `GEO_GEOCERCA_INDEX` (default `idx_geo_geocerca`, the geofence panel's own Search index with `storedSource`). `scripts/create_search_index_geo.sh` creates both and waits for READY.
 - `DEMO_ADMIN_TOKEN`: only needed to allow mutations from anything other than loopback (this PoV exposes no destructive mutations, but the guard is the same as in the rest of the portfolio); mirror it as `VITE_DEMO_API_TOKEN` in the frontend.
 - `ALLOWED_ORIGINS` (default `http://localhost:5184,http://127.0.0.1:5184`).
 
@@ -142,6 +147,16 @@ The seed records the customer IDs whose pairs were planted in `demo_metadata` (w
 
 Read it as: per customer, the window pipeline costs about 2 ms on the server and the rest is round trips. The full scan is the expensive investigation mode (2.7 s for 150k documents on this tier), which is why production filters by customer or period before the window. These numbers describe this cluster and network, not a sizing.
 
+Geofence panel (2026-11-13, `geo_f4_test`, pharmacy category, term "drogaria"; median of 3 server explains, wall p50 of 5 runs):
+
+| geofence | vertices | terminals native / Search | same answer | native server (ms) | Search server (ms) | native wall p50 (ms) | Search wall p50 (ms) |
+|---|---:|---:|---|---:|---:|---:|---:|
+| São Paulo ≈ 8 km | 7 | 8 / 8 | yes | 37 | 84 | 294 | 316 |
+| São Paulo ≈ 15 km | 7 | 24 / 24 | yes | 50 | 130 | 307 | 348 |
+| São Paulo ≈ 60 km | 7 | 48 / 48 | yes | 50 | 142 | 344 | 369 |
+| Sorocaba ≈ 600 km | 7 | 163 / 166 | no (3 Search-only) | 110 | 227 | 655 | 578 |
+| Sorocaba ≈ 600 km, densified | 598 | 166 / 166 | yes | 380 | 238 | 1,113 | 679 |
+
 ## Technical pitfalls
 
 - **`$geoNear` with more than one 2dsphere index on the field needs `key`.** `geo.transacoes` has three on `local` on purpose (pure, the compound one used by the explain panel, and category + location). Without `key`, the server refuses ("more than one 2dsphere index"). With `key: "local"`, it runs on the main collection. Measured on 9.0.7, it matches the old single-index copy: same count, same first results, same documents examined. The `transacoes_geonear` copy was retired (see [ADR 0001](docs/adr/0001-geonear-na-colecao-principal-com-key.md)). If a server still refuses, only the `$geoNear` card degrades and shows the error.
@@ -150,7 +165,8 @@ Read it as: per customer, the window pipeline costs about 2 ms on the server and
 - The square around center+radius clamps coordinates near the pole/antimeridian; without the clamp, `$geoWithin` returns `BadValue` for latitude outside `[-90,90]`.
 - The investigation panel runs a `$facet` with two branches over the same `$setWindowFields` (the expensive part, computed once): `sinais` (above the limit) and `aprovados` (a `$sample` within the limit). The final list interleaves the two classes instead of sorting only by `ts`, because the approved sample tends to concentrate recent dates and pushed every flagged pair to the end of the table. Selectivity (pairs evaluated / flagged / rate / alerts per day) is counted **before** the geometric cut.
 - The map (`frontend/src/components/MapaBrasil.jsx`) uses the IBGE state mesh (`frontend/src/data/brasil-uf.js`, 27 states, ~41 KB), simplified with Douglas-Peucker at 0.05° over coordinates quantized to a 0.02° grid; the quantization is what prevents gaps between neighboring states. Equirectangular projection with a `cos(-15°)` factor: without it the South comes out ~18% too wide. No Leaflet/Mapbox/tiles and no external map dependency, so the module renders and stays functional with the external network blocked. The only external request is Google Fonts in `frontend/index.html`. (The street-level maps in the operators panel use OpenStreetMap tiles and are optional.)
-- **Search score ties:** generated merchant names repeat ("Padaria da Praça"), so text relevance alone ties and the order becomes arbitrary. With a term, the `compound` adds `should: near` (pivot = half the radius), so the Search engine itself breaks ties by proximity. Atlas Search geo uses Cartesian polygon edges while native `$geoWithin` is geodesic: near a polygon border, the two can disagree ([ADR 0002](docs/adr/0002-painel-03-indice-e-busca-visiveis.md)).
+- **Search score ties:** generated merchant names repeat ("Padaria da Praça"), so text relevance alone ties and the order becomes arbitrary. With a term, the `compound` adds `should: near` (pivot = half the radius), so the Search engine itself breaks ties by proximity. Atlas Search geo uses Cartesian polygon edges while native `$geoWithin` is geodesic: near a polygon border, the two can disagree ([ADR 0002](docs/adr/0002-painel-03-indice-e-busca-visiveis.md)). Measured in the geofence panel: 3 of 120 fences differ, all 600 km wide; densifying the edges aligns them ([ADR 0003](docs/adr/0003-geocerca-nativo-x-search.md)).
+- **`$search` against a missing or still-building index returns nothing, without an error.** Every Search call first checks `list_search_indexes` for status `READY` and `queryable`; if not, the Search side shows "unavailable" and the native side still runs.
 
 ## Security
 

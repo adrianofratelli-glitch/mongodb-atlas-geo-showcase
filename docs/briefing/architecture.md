@@ -8,7 +8,10 @@ de antifraude e sem mapa bonito por si só. Não é motor antifraude, não tem
 rótulo de fraude confirmada, não calcula rota por ruas. **Sem LLM.** UI,
 docstrings e mensagens de erro em pt-BR por design (público brasileiro).
 
-Três painéis visíveis no frontend:
+Quatro painéis visíveis no frontend, cada um com uma faixa "caso de negócio"
+(`CasoNegocio.jsx`) que diz a pergunta de setor que ele responde — fraude por
+velocidade impossível, varejo/logística por proximidade, custo de índice,
+geocerca em logística/seguros. São perguntas típicas, não casos de cliente:
 
 1. **Investigação retrospectiva** (`impossible-travel`) — pares de compras
    presenciais do mesmo cliente distantes demais para o tempo decorrido entre
@@ -28,6 +31,14 @@ Três painéis visíveis no frontend:
    `executionStats`) e um `$search` que combina texto fuzzy, `near` (score por
    proximidade), raio `geoWithin` e facetas via `$searchMeta`. Componente
    `frontend/src/components/PainelIndiceBusca.jsx` (ADR 0002).
+4. **Geocerca: mesma pergunta, dois motores** (`geocerca-comparar`) — quais
+   terminais de uma categoria estão dentro de um polígono, respondido pelo
+   2dsphere nativo (`$match` com `$geoWithin` `$geometry`, índice
+   `categoria_local_idx`) e pelo Atlas Search (`geoWithin` geometry +
+   `in` categoria no `filter` de um `compound`, texto como `should`, índice
+   próprio `idx_geo_geocerca` com `storedSource`). Mede parede (3×) e servidor
+   (`explain`), devolve os dois pipelines executados e compara a resposta
+   terminal a terminal. Componente `PainelGeocerca.jsx` (ADR 0003).
 
 ## Stack
 
@@ -58,9 +69,9 @@ React 19 + Vite (frontend/, :5184) --fetch--> FastAPI (backend/main.py, :8184) -
 | `backend/settings.py` | Configuração central via `.env` (dataclass frozen), sem dependência extra além de `python-dotenv`. |
 | `backend/database.py` | Instancia o `MongoClient` único (`connect=False`, lazy) e expõe `readiness()` para o healthcheck. |
 | `backend/security.py` | `MutationGuardMiddleware` (bloqueia mutação fora de loopback sem `DEMO_ADMIN_TOKEN`) e `ApiHardeningMiddleware` (teto de tamanho de corpo, headers `nosniff`/`DENY`/`no-referrer`/`no-store`). |
-| `backend/routers/geo.py` | Todo o domínio da PoV: os 3 painéis + `status`, `municipios`, `sinais-ao-vivo` (código herdado, não usado pelo frontend deste repo). |
-| `backend/tests/test_geo.py` | 45 testes unitários, Mongo stubado via monkeypatch — roda sem cluster ao vivo. |
-| `backend/tests_live/test_live_geo.py` | 6 testes contra um banco `*_test` real (só com `GEO_LIVE=1`): IXSCAN, `$geoNear` igual ao círculo, 40/40 plantados, raio do `$search`, rotas. |
+| `backend/routers/geo.py` | Todo o domínio da PoV: os 4 painéis + `status`, `municipios`, `sinais-ao-vivo` (código herdado, não usado pelo frontend deste repo). |
+| `backend/tests/test_geo.py` | 52 testes unitários, Mongo stubado via monkeypatch — roda sem cluster ao vivo. |
+| `backend/tests_live/test_live_geo.py` | 8 testes contra um banco `*_test` real (só com `GEO_LIVE=1`): IXSCAN, `$geoNear` igual ao círculo, 40/40 plantados, raio do `$search`, rotas, geocerca igual nos dois motores e alinhada após densificar. |
 | `scripts/bench_geo.py` | Latência por fluxo (parede p50/p95 e tempo no servidor via explain), somente leitura. |
 
 ## Componentes do frontend
@@ -68,7 +79,10 @@ React 19 + Vite (frontend/, :5184) --fetch--> FastAPI (backend/main.py, :8184) -
 | Arquivo | Papel |
 |---|---|
 | `frontend/src/App.jsx` | Casca de módulo único — sem seletor/roteamento por hash, porque só existe este módulo aqui. |
-| `frontend/src/pages/Geo.jsx` | Os dois painéis visíveis (investigação + operadores), toda a orquestração de estado e chamadas à API. |
+| `frontend/src/pages/Geo.jsx` | Painéis 01 e 02 (investigação + operadores), orquestração de estado e montagem dos painéis 03 e 04. |
+| `frontend/src/components/PainelIndiceBusca.jsx` | Painel 03: explain de dois índices e `$search` com texto, `near`, raio e facetas. |
+| `frontend/src/components/PainelGeocerca.jsx` | Painel 04: geocerca no 2dsphere nativo × Atlas Search, com veredito, medições, pipelines e mapa (divergentes primeiro). |
+| `frontend/src/components/CasoNegocio.jsx` | Faixa "caso de negócio" de cada painel. |
 | `frontend/src/components/MapaBrasil.jsx` | Mini-mapa de dois pontos (origem/destino) para o painel de investigação, usando a malha IBGE local. |
 | `frontend/src/components/MapaConsulta.jsx` | Mapa de tiles OpenStreetMap para o painel de operadores — mostra centro, raio, polígono e amostra de resultados. |
 | `frontend/src/components/ComparacaoRotas.jsx` | Visualização de `$geoWithin`/`$geoIntersects` sobre rotas sintéticas (LineString). |
@@ -81,7 +95,7 @@ React 19 + Vite (frontend/, :5184) --fetch--> FastAPI (backend/main.py, :8184) -
 ## Fluxo de dados
 
 1. Frontend chama `GET /geo/status` e `GET /geo/municipios` ao montar a
-   página (`Geo.jsx:49-52`) para popular badges de estado e o seletor de
+   página (`Geo.jsx:51-54`) para popular badges de estado e o seletor de
    centro do mapa.
 2. Painel 01: usuário escolhe limite de km/h (e opcionalmente um cliente) →
    `GET /geo/impossible-travel` → pipeline de agregação roda inteiro no
@@ -137,12 +151,22 @@ Atlas. Ver `docs/briefing/queries.md` para o detalhe de cada uma.
   só a fila de suspeitos. A lista final intercala as duas classes em vez de
   ordenar só por `ts`, porque a amostra aprovada tende a concentrar datas
   recentes e empurraria todas as sinalizadas para o fim da tabela
-  (`backend/routers/geo.py:461-498`).
+  (`backend/routers/geo.py:486-523`).
 
 - **Por que a seletividade é contada antes do corte geométrico?** A
   pergunta de um time de risco não é "quantos sinais saíram" e sim "de
   quantas oportunidades" — sem denominador, "40 pares" não diz se a regra é
-  seletiva ou se inunda a fila de alertas (`backend/routers/geo.py:461-466`).
+  seletiva ou se inunda a fila de alertas (`backend/routers/geo.py:486-491`).
+
+- **Por que a geocerca compara dois motores em vez de escolher um?**
+  Porque a resposta depende da pergunta, e a tela mede em vez de afirmar.
+  Polígono simples + igualdade: o 2dsphere com índice composto é 2–3× mais
+  barato no servidor. Polígono de centenas de vértices: a ordem se inverte.
+  Texto, relevância ou facetas: só o Search faz. As bordas divergem em
+  geocercas grandes (Search = reta lng/lat, 2dsphere = geodésica), e a tela
+  mostra os terminais afetados; densificar alinha (ADR 0003). Geo + vetor
+  ficou de fora: o único texto do dataset é o nome sintético do
+  estabelecimento.
 
 - **Por que sem LLM?** Escopo deliberado desta PoV — o objetivo é provar
   comportamento geoespacial puro do banco, não um caso de uso de IA. Não há
@@ -162,7 +186,8 @@ Atlas. Ver `docs/briefing/queries.md` para o detalhe de cada uma.
 `backend/.env` está no `.gitignore`):
 
 - `MONGO_URI`, `MONGO_DB` (padrão `POC`), `MONGO_TIMEOUT_MS`
-- `GEO_DB` (padrão `geo`), `GEO_SEARCH_INDEX` (padrão `idx_geo_estabelecimento`)
+- `GEO_DB` (padrão `geo`), `GEO_SEARCH_INDEX` (padrão `idx_geo_estabelecimento`),
+  `GEO_GEOCERCA_INDEX` (padrão `idx_geo_geocerca`; fora do `.env.example`, o padrão basta)
 - `DEMO_ADMIN_TOKEN` — necessário só para permitir mutação vinda de fora do
   loopback (esta PoV não expõe mutação destrutiva, mas o guard é o mesmo do
   restante do portfólio)
@@ -205,4 +230,5 @@ GEO_DB=geo_test python scripts/bench_geo.py --runs 7             # latência (so
 
 Antes de qualquer demo: `curl http://localhost:8184/preflight` — valida
 `MONGO_URI`, conectividade, dataset carregado e (opcionalmente, sem
-reprovar) disponibilidade do Atlas Search index.
+reprovar) os dois índices do Atlas Search (`geo_search`, `geo_geocerca`), que
+só contam como disponíveis em `READY`/`queryable`.

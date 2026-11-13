@@ -104,13 +104,24 @@ de inventar resultados. A definição que ele aplica:
 `categoria` e `uf` são indexados duas vezes de propósito: `token` serve ao
 filtro exato, `stringFacet` serve à faceta do `$searchMeta`.
 
+### O índice da geocerca (painel 04)
+
+O mesmo script cria `idx_geo_geocerca` (ou `GEO_GEOCERCA_INDEX`), usado só
+por `POST /geo/geocerca-comparar` (ADR 0003): `local` (geo),
+`estabelecimento.categoria` (token), `estabelecimento.nome` (string pt) e
+`storedSource` com `dispositivo.id`, `estabelecimento.nome`, `municipio`,
+`uf` e `local`, para o `$search` responder com `returnStoredSource` sem
+buscar o documento inteiro. O script espera os dois índices chegarem a
+`READY`; `seed_geo.py --check` confere os dois. Sem ele, o painel 04 mostra o
+Search indisponível e mede só o nativo.
+
 ## O que o módulo não alega
 
 A página diz isto em voz alta, e este documento também: o MongoDB responde
 *predicados* geoespaciais — está dentro, cruza, o que há por perto. Ele não tem
 álgebra de geometria (sem buffer, união, interseção ou área), só WGS84 sem
 reprojeção, e nada de raster, topologia ou roteamento. O `$geoNear` precisa ser
-o primeiro estágio do pipeline, e o `filter` do `$vectorSearch` não aceita
-operadores geoespaciais de forma alguma. Cargas que exigem construção de
+o primeiro estágio do pipeline, e o `filter` do `$vectorSearch` não tem
+predicado geoespacial. Cargas que exigem construção de
 geometria, topologia, roteamento ou análise GIS pesada precisam de um sistema
 geoespacial dedicado.

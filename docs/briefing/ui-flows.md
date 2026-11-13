@@ -2,7 +2,7 @@
 
 > Números de linha podem ficar defasados após mudanças: a fonte atualizada é [MAPA_DO_CODIGO.md](../MAPA_DO_CODIGO.md).
 
-Screenshots em `docs/screenshots/` (01 a 04, usados no README). Este
+Screenshots em `docs/screenshots/` (01 a 05, usados no README). Este
 documento mapeia telas, componentes e fluxo de interação a partir do código
 em `frontend/src/`.
 
@@ -11,7 +11,13 @@ em `frontend/src/`.
 `frontend/src/App.jsx` é a casca do app: sem seletor de módulo nem
 roteamento por hash, porque esta PoV extraída só tem um módulo (Geo). Toda a
 tela vive em `frontend/src/pages/Geo.jsx`, mais o painel 03 em
-`frontend/src/components/PainelIndiceBusca.jsx`.
+`frontend/src/components/PainelIndiceBusca.jsx` e o painel 04 em
+`frontend/src/components/PainelGeocerca.jsx`.
+
+Toda seção abre com a faixa **caso de negócio** (`CasoNegocio.jsx`): a
+pergunta de setor que ela responde (01 prevenção a fraude com cartão; 02
+varejo e logística; 03 engenharia/custo e fraude/varejo; 04 logística,
+seguros e varejo). São perguntas típicas, não clientes; o dado é sintético.
 
 Barra de status no topo (renderizada se `GET /geo/status` respondeu):
 badges com total de transações, DB.coleção, nº de índices, aviso "dataset
@@ -23,7 +29,7 @@ rodar `python scripts/seed_geo.py`.
 
 ## Seção 01 · Investigação retrospectiva (impossible travel)
 
-`Geo.jsx:129-341`.
+`Geo.jsx:131-346`.
 
 **Objetivo da tela**: "Investigar 90 dias sem tirar o histórico do banco."
 
@@ -76,7 +82,7 @@ completo (JSON formatado, syntax highlight).
 
 ## Seção 02 · Operadores de consulta geoespacial
 
-`Geo.jsx:343-428`.
+`Geo.jsx:348-437`.
 
 **Objetivo da tela**: "Consultar por área, proximidade e distância."
 
@@ -132,11 +138,38 @@ próprio (municípios) e dois blocos:
   `QueryBlock` do pipeline `$search` e do `$searchMeta`. Sem índice Search, o
   banner "Índice de busca ausente" aparece e o bloco A continua funcionando.
 
+## Seção 04 · Geocerca: mesma pergunta, dois motores
+
+`frontend/src/components/PainelGeocerca.jsx` (ADR 0003). Selects de centro
+(municípios), tamanho da geocerca (≈ 8/15/60/600 km), categoria (as 5 do
+seed) e texto (termos que existem em nomes daquela categoria, ou vazio),
+checkbox "densificar bordas" e botão "Comparar os dois motores" → `POST
+/geo/geocerca-comparar` (3 execuções de cada motor + 1 explain de cada).
+
+- Pergunta em uma linha e badge de vértices (7, ou ~600 densificado).
+- Veredito: verde "Mesma resposta nos dois motores: N terminais e M
+  compras" ou laranja "Respostas diferentes", com os ids só no nativo / só
+  no Search / compras divergentes e a explicação da borda reta × geodésica.
+- Dois cartões: terminais, compras, servidor (explain), parede p50, primeiro
+  estágio; no nativo também índice e chaves/docs examinados. No Search, a
+  lista "mais relevantes para o termo" (um por terminal, score > 0). Cada
+  cartão tem o `QueryBlock` do pipeline executado. Sem índice `READY`, o
+  cartão do Search vira aviso e o nativo continua medido.
+- Nota com os dois tempos de servidor e a razão; o texto muda com a
+  complexidade do polígono, sem conclusão fixa.
+- Mapa (`MapaConsulta`) com o polígono e até 24 terminais: os divergentes
+  primeiro.
+
+Roteiro sugerido: São Paulo ≈ 15 km (mesma resposta; nativo mais barato) →
+Sorocaba ≈ 600 km (3 terminais de Juiz de Fora só no Search) → marcar
+"densificar bordas" (respostas iguais; agora o Search é mais barato).
+
 **Rodapé da tela** (`Limites`): componente `<details>`
 colapsável "Escopo desta demonstração" — itens fixos, verificáveis:
 rotas são sintéticas sem persistência; investigação não calcula trajeto por
 ruas nem aprova compra; `$geoNear` indica o índice com `key: "local"`; o
-gabarito do painel 01 não mede fraude real. Ver comentário em `Limites.jsx` sobre por que a regra
+gabarito do painel 01 não mede fraude real; a geocerca do painel 04 é
+sintética e os casos de negócio são perguntas típicas, não clientes. Ver comentário em `Limites.jsx` sobre por que a regra
 é "limite inventado é pior que limite omitido".
 
 ---
@@ -146,11 +179,13 @@ gabarito do painel 01 não mede fraude real. Ver comentário em `Limites.jsx` so
 | Componente | Papel |
 |---|---|
 | `MapaBrasil.jsx` (`MiniMapa`) | Mapa leve com malha IBGE local (sem tiles externos), usado na Seção 01 para mostrar 2 pontos + linha. |
-| `MapaConsulta.jsx` | Mapa com tiles OpenStreetMap, zoom/pan, usado na Seção 02. Degrada (`failed` state) se os tiles não carregarem — continua mostrando pontos/polígono sem fundo de mapa. |
+| `MapaConsulta.jsx` | Mapa com tiles OpenStreetMap, zoom/pan, usado nas Seções 02 e 04. Degrada (`failed` state) se os tiles não carregarem — continua mostrando pontos/polígono sem fundo de mapa. |
 | `ComparacaoRotas.jsx` | Chama `GET /geo/rotas-comparar` e desenha as 3 rotas sintéticas classificadas por `$geoWithin`/`$geoIntersects`. |
 | `ComparacaoOperadores.jsx` | Texto didático estático por operador (não chama API). |
 | `QueryBlock.jsx` | `<details>`-like colapsável com `react-syntax-highlighter` (tema `atomOneDark`) — usado nas três seções para mostrar a query/pipeline JSON real. |
 | `PainelIndiceBusca.jsx` | Seção 03: explain medido de dois índices e busca `$search` com texto, `near`, raio e facetas. |
+| `PainelGeocerca.jsx` | Seção 04: geocerca no 2dsphere nativo × Atlas Search, veredito, medições, pipelines e mapa. |
+| `CasoNegocio.jsx` | Faixa "caso de negócio" no topo de cada seção. |
 | `Limites.jsx` | Bloco de limitações declaradas, padrão reaproveitado do portfólio maior (módulo 08 original). |
 | `geoMapMath.mjs` | Funções puras de projeção (`project`, `fitView`, `circleRing`, `metersPerPixel`) usadas por `MapaConsulta`. |
 | `useApi.js`, `usePolling.js` | Hooks genéricos de fetch, copiados verbatim do repositório de origem. |

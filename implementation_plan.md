@@ -1,7 +1,9 @@
 # Geo Showcase — briefing de construção
 
 PoV standalone de consultas geoespaciais no Atlas, sem LLM. A interface
-compara investigação retrospectiva e operadores geoespaciais; não representa
+compara investigação retrospectiva, operadores geoespaciais, índice/busca e a
+mesma geocerca no 2dsphere nativo e no Atlas Search, cada painel com o caso de
+negócio que resolve; não representa
 decisão de fraude nem benchmark de capacidade.
 
 | Referência | Conteúdo |
@@ -10,7 +12,7 @@ decisão de fraude nem benchmark de capacidade.
 | [Queries](docs/briefing/queries.md) | Pipelines reais, índices e geometria |
 | [Fluxos](docs/briefing/ui-flows.md) | Painéis e roteiro de apresentação |
 | [README](README.md) | Instalação, execução e latência medida |
-| [ADRs](docs/adr/) | `$geoNear` com `key`; painel 03 (explain e busca na tela) |
+| [ADRs](docs/adr/) | `$geoNear` com `key`; painel 03 (explain e busca na tela); painel 04 (geocerca: 2dsphere × Atlas Search) |
 
 Portas dedicadas: frontend `127.0.0.1:5184`, backend `127.0.0.1:8184`.
 O proxy de `/api` remove esse prefixo antes de encaminhar ao backend.

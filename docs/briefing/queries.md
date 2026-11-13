@@ -21,7 +21,7 @@ nome explícito (a lista completa que `/geo/status` também expõe):
 | Nome | Campos | Tipo | Por que existe |
 |---|---|---|---|
 | `e2e_unq_idx` | `endToEndId` asc | único | Idempotência do seed — reexecutar não duplica transação. |
-| `cliente_status_local_idx` | `clienteId` asc, `status` asc, `local` **2dsphere** | composto (Demo A) | Compara plano de execução com `local_2dsphere_idx` sob o mesmo filtro de `$geoWithin`. Igualdade primeiro, geo por último — o campo geo **não** precisa ser prefixo do índice para `$geoWithin`/`$geoIntersects` (nota didática do código, `geo.py:307-314`). |
+| `cliente_status_local_idx` | `clienteId` asc, `status` asc, `local` **2dsphere** | composto (Demo A) | Compara plano de execução com `local_2dsphere_idx` sob o mesmo filtro de `$geoWithin`. Igualdade primeiro, geo por último — o campo geo **não** precisa ser prefixo do índice para `$geoWithin`/`$geoIntersects` (nota didática do código, `geo.py:330-337`). |
 | `local_2dsphere_idx` | `local` **2dsphere** | geo puro (Demo A) | Outro lado do comparativo de explain — mede se o índice composto ou o puro examina menos chaves para o mesmo filtro. |
 | `cliente_ts_idx` | `clienteId` asc, `ts` asc | composto | Sustenta o `$setWindowFields` particionado por cliente e ordenado por `ts` no painel de investigação (Demo B). |
 | `uf_ts_idx` | `uf` asc, `ts` desc | composto | Suporte a consultas por UF/tempo (não exercitado diretamente pelos endpoints atuais, mas mantido como índice de suporte geral). |
@@ -68,7 +68,7 @@ timeout configurável (`GEO_SEARCH_READY_TIMEOUT_SECONDS`, padrão 600s).
 
 ## Demo A — `POST /geo/explain-compare`
 
-**Onde**: `backend/routers/geo.py:296-343` (modelo `ExplainRequest`, função
+**Onde**: `backend/routers/geo.py:319-368` (modelo `ExplainRequest`, função
 `explain_compare`), helpers `_explain_find` (linha 149) e `_resumo_plano`
 (linha 117).
 
@@ -103,7 +103,7 @@ de texto para caber numa narrativa esperada.
 
 ## Demo B — `GET /geo/impossible-travel`
 
-**Onde**: `backend/routers/geo.py:346-569`. Helper de haversine em
+**Onde**: `backend/routers/geo.py:371-594`. Helper de haversine em
 `_haversine_stages` (linha 61-94).
 
 **O que faz**: para cada cliente, ordena as transações por `ts`, usa
@@ -195,7 +195,7 @@ fraude — não há rótulo de fraude confirmada no dataset.
 
 ## Demo B2 — `POST /geo/operadores`
 
-**Onde**: `backend/routers/geo.py:608-741`. Geometria auxiliar em
+**Onde**: `backend/routers/geo.py:633-766`. Geometria auxiliar em
 `_poligono_quadrado`, `$geoNear` isolado em `geo.py::_geo_near_resultado`.
 
 **O que faz**: roda os 5 operadores/estágios geoespaciais do MongoDB lado a
@@ -245,7 +245,7 @@ dataset — a diferença só apareceria com `LineString`/`Polygon` armazenados
 
 ## `GET /geo/rotas-comparar`
 
-**Onde**: `backend/routers/geo.py:744-786`.
+**Onde**: `backend/routers/geo.py:769-811`.
 
 **O que faz**: gera 3 rotas sintéticas (`LineString`) sem persistir no
 banco, injeta via `$documents` e classifica cada uma com `$geoWithin` e
@@ -274,7 +274,7 @@ evita precisar persistir rotas de exemplo no banco.
 
 ## `POST /geo/search`
 
-**Onde**: `backend/routers/geo.py:789-945`. Âncora da investigação em
+**Onde**: `backend/routers/geo.py:814-970`. Âncora da investigação em
 `_ancora_da_contestacao` (linha 804-819).
 
 **O que faz** (painel 03, bloco B): um único `$search` combinando relevância
@@ -340,9 +340,90 @@ de partida. Deduplicação por terminal (`$group` + `$replaceWith`) evita que
 
 ---
 
+## `POST /geo/geocerca-comparar`
+
+**Onde**: `backend/routers/geo.py::geocerca_comparar` (ADR 0003). Polígono em
+`_poligono_geocerca` (heptágono irregular sintético, anel fechado
+anti-horário); `densificar: true` passa por `_densificar_anel` (vértice a
+cada 0,05°).
+
+**O que faz** (painel 04): a mesma pergunta — terminais de uma categoria
+dentro da geocerca, com contagem de compras — em dois motores, com o mesmo
+`$group` no fim para a resposta ser comparável terminal a terminal.
+
+Nativo (planner escolhe `categoria_local_idx`):
+
+```js
+db.transacoes.aggregate([
+  { $match: {
+      "estabelecimento.categoria": "<categoria>",
+      local: { $geoWithin: { $geometry: { type: "Polygon", coordinates: [[ /* 7 ou ~600 vértices */ ]] } } }
+  } },
+  { $group: { _id: "$dispositivo.id", compras: { $sum: 1 }, nome: { $first: "$estabelecimento.nome" },
+              municipio: { $first: "$municipio" }, uf: { $first: "$uf" }, local: { $first: "$local" } } },
+  { $sort: { _id: 1 } }
+])
+```
+
+Atlas Search (índice próprio `idx_geo_geocerca`):
+
+```js
+db.transacoes.aggregate([
+  { $search: {
+      index: "idx_geo_geocerca",
+      compound: {
+        filter: [
+          { geoWithin: { path: "local", geometry: { type: "Polygon", coordinates: [[ /* o mesmo anel */ ]] } } },
+          { in: { path: "estabelecimento.categoria", value: ["<categoria>"] } }
+        ],
+        // só com termo: soma relevância, não filtra (o conjunto continua o mesmo)
+        should: [ { text: { query: "<termo>", path: "estabelecimento.nome", fuzzy: { maxEdits: 1 } } } ]
+      },
+      returnStoredSource: true
+  } },
+  { $facet: {
+      terminais: [ /* o mesmo $group + $sort do nativo */ ],
+      // só com termo: um por terminal, score > 0, top 5
+      relevancia: [
+        { $group: { _id: "$dispositivo.id", nome: { $first: "$estabelecimento.nome" },
+                    municipio: { $first: "$municipio" }, score: { $max: { $meta: "searchScore" } } } },
+        { $match: { score: { $gt: 0 } } }, { $sort: { score: -1, _id: 1 } }, { $limit: 5 },
+        { $project: { _id: 0, terminalId: "$_id", nome: 1, municipio: 1, score: { $round: ["$score", 3] } } }
+      ]
+  } }
+])
+```
+
+Antes do `$search`, `_estado_search_index` lê `list_search_indexes` e exige
+`status: "READY"` e `queryable`; caso contrário o Search não roda (índice
+ausente ou em BUILDING devolveria vazio sem erro). Cada pipeline roda
+`execucoes` vezes (padrão 3, alternados) e uma vez em `explain`
+(`executionStats`); `_resumo_explain_agregacao` extrai só números (o bloco
+do mongot traz o host do nó). A resposta devolve os pipelines exatos que
+foram executados.
+
+**Índice** `idx_geo_geocerca` (de `scripts/create_search_index_geo.sh`):
+
+```js
+{
+  mappings: { dynamic: false, fields: {
+    estabelecimento: { type: "document", fields: {
+      nome: { type: "string", analyzer: "lucene.portuguese" },
+      categoria: { type: "token" } } },
+    local: { type: "geo" } } },
+  storedSource: { include: ["dispositivo.id", "estabelecimento.nome", "municipio", "uf", "local"] }
+}
+```
+
+**Medido** (geo_f4_test, 2026-11-13): mesma resposta em 117 de 120 geocercas
+(40 municípios × 8/60/600 km); as 3 divergentes têm 600 km (1–3 terminais só
+no Search, borda reta × geodésica) e se alinham densificando. Servidor:
+nativo 37–110 ms × Search 84–227 ms em polígono de 7 vértices; com ~600
+vértices, nativo 380 ms × Search 238 ms.
+
 ## `GET /geo/sinais-ao-vivo` (código herdado, não chamado pelo frontend)
 
-**Onde**: `backend/routers/geo.py:209-254`. Só `find`/`count_documents`
+**Onde**: `backend/routers/geo.py:231-277`. Só `find`/`count_documents`
 simples sobre `geo.sinais_ao_vivo` (populada por um stream processor que
 existe apenas no repositório de origem, `geoSinais30s`). Degrada sozinho
 para `estado: "indisponivel"` quando a coleção não existe. Não remover sem
@@ -352,7 +433,7 @@ checar dependência.
 
 ## `GET /geo/municipios`
 
-**Onde**: `backend/routers/geo.py:167-185, 290-293`. Agregação simples,
+**Onde**: `backend/routers/geo.py:176-194, 290-293`. Agregação simples,
 cacheada em memória (`_municipios_cache`):
 
 ```js
@@ -368,7 +449,7 @@ reais do dataset e um ponto representativo para centrar o mapa.
 
 ## `GET /geo/status`
 
-**Onde**: `backend/routers/geo.py:258-287`. Usa `estimated_document_count()`
+**Onde**: `backend/routers/geo.py:281-310`. Usa `estimated_document_count()`
 e `index_information()` — sem agregação, é metadado de coleção/índice. A
 lista de clientes com par plantado vem de `geo.py::_manifesto`:
 `demo_metadata.clientesPlantados` (`find_one({_id: "geo_seed"})`), com
