@@ -180,8 +180,10 @@ dos tiles do OpenStreetMap).
 `start.sh` na raiz sobe o backend (`uvicorn` em 127.0.0.1:8184, espera
 `/health/live`) e depois o frontend (`vite preview` do bundle em 5184,
 reconstruído só quando `src/` muda; `POV_DEV=1` usa `--reload` e `vite dev`).
-Fica em primeiro plano e arma `trap cleanup` antes do primeiro filho: no SIGTERM
-derruba a árvore inteira (o `npm` deixaria o `vite` neto escutando). Porta
+Fica em primeiro plano e arma os traps antes do primeiro filho: no SIGTERM (ou
+Ctrl+C) guarda os PIDs da árvore inteira, manda TERM e depois KILL (o `npm`
+deixaria o `vite` neto escutando, já reparentado) e **sai** com 143/130, mesmo
+no meio da partida, em vez de seguir e subir o frontend sem trap. Porta
 ainda ocupada espera até 10 s e depois falha sem matar o processo alheio.
 
 É o launcher do PoV Portfolio (id `geo` em `pov-portfolio/povs.json`, health

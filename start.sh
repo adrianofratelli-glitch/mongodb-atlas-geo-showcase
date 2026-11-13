@@ -29,26 +29,31 @@ FRONTEND_PID=""
 
 fail() { echo "ERRO: $1" >&2; exit 1; }
 
-# Mata o processo e seus descendentes (npm → vite).
-kill_tree() {
-  local pid="$1" sig="${2:-TERM}"
+# Lista o processo e seus descendentes (npm → vite), de cima para baixo.
+tree_pids() {
+  local pid="$1"
   [[ -z "$pid" ]] && return 0
-  local kids
-  kids="$(pgrep -P "$pid" 2>/dev/null || true)"
-  for kid in $kids; do kill_tree "$kid" "$sig"; done
-  kill -"$sig" "$pid" 2>/dev/null || true
+  echo "$pid"
+  local kid
+  for kid in $(pgrep -P "$pid" 2>/dev/null || true); do tree_pids "$kid"; done
 }
 
+TREE=()
 cleanup() {
   trap - EXIT INT TERM
-  kill_tree "$FRONTEND_PID"
-  kill_tree "$BACKEND_PID"
+  # Guarda os PIDs ANTES do TERM: depois dele o vite neto é reparentado ao
+  # launchd e pgrep -P já não o acharia na passada do KILL.
+  TREE=($(tree_pids "$FRONTEND_PID") $(tree_pids "$BACKEND_PID"))
+  [[ ${#TREE[@]} -eq 0 ]] && return 0
+  kill -TERM "${TREE[@]}" 2>/dev/null || true
   sleep 1
-  kill_tree "$FRONTEND_PID" KILL
-  kill_tree "$BACKEND_PID" KILL
+  kill -KILL "${TREE[@]}" 2>/dev/null || true
 }
-# Armado antes de subir qualquer coisa: SIGTERM durante a partida também limpa.
-trap cleanup EXIT INT TERM
+# Armado antes de subir qualquer coisa. Sinal durante a partida limpa E encerra
+# o script: sem o exit, ele seguiria no wait_for_url e subiria o frontend já sem trap.
+trap 'cleanup; exit 143' TERM
+trap 'cleanup; exit 130' INT
+trap cleanup EXIT
 
 wait_for_url() {
   local url="$1" attempts="${2:-40}"
