@@ -37,6 +37,17 @@ UI text, docstrings, and error messages are in Brazilian Portuguese by design (B
 
 ## Commands
 
+One command brings up both sides (the same launcher the local PoV portfolio runs; stays in the foreground and tears down backend and frontend on Ctrl+C/SIGTERM):
+
+```bash
+./start.sh             # backend :8184 + frontend :5184 (built bundle, rebuilt only when src changes)
+POV_DEV=1 ./start.sh   # uvicorn --reload + vite dev
+```
+
+`POV_BACKEND_PORT`/`POV_FRONTEND_PORT` override the ports (the portfolio's isolated test instance uses them); requires `backend/.env`, `backend/venv` and `frontend/node_modules` from the steps below.
+
+By hand:
+
 ```bash
 # Backend
 cd backend

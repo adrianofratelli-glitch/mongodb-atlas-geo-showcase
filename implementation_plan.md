@@ -14,8 +14,9 @@ decisão de fraude nem benchmark de capacidade.
 
 Portas dedicadas: frontend `127.0.0.1:5184`, backend `127.0.0.1:8184`.
 O proxy de `/api` remove esse prefixo antes de encaminhar ao backend.
-Esta PoV permanece fora do catálogo do launcher; as portas são reservadas
-também no registro do workspace.
+Desde 2026-11-13 a PoV está no catálogo do launcher (`geo` em
+`pov-portfolio/povs.json`): `./start.sh` sobe os dois lados em primeiro plano e
+limpa a árvore no SIGTERM. As portas seguem reservadas no registro do workspace.
 
 Validação local: `backend/venv/bin/python -m pytest backend/tests`,
 `npm --prefix frontend run build` e `node --test frontend/tests/*.test.mjs`.

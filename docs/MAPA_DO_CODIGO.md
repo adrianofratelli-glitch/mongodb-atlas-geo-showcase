@@ -1,6 +1,6 @@
 # Mapa do código — mongodb-atlas-geo-showcase
 
-> Também conhecida como: Geo (PoV standalone, fora do catálogo do Portal). Portas: frontend 5184 / backend 8184. Em uma frase: mostra, contra um cluster Atlas real, o que o MongoDB faz com dados geográficos (índices 2dsphere, `$geoWithin`/`$near`/`$geoNear`, `$setWindowFields` para "viagem impossível" e `$search` com geo), com o cálculo rodando no banco.
+> Também conhecida como: Geo (id `geo` no catálogo do Portal, `pov-portfolio/povs.json`, desde 2026-11-13). Portas: frontend 5184 / backend 8184. Em uma frase: mostra, contra um cluster Atlas real, o que o MongoDB faz com dados geográficos (índices 2dsphere, `$geoWithin`/`$near`/`$geoNear`, `$setWindowFields` para "viagem impossível" e `$search` com geo), com o cálculo rodando no banco.
 
 Detalhes das queries: [briefing/queries.md](briefing/queries.md). Telas: [briefing/ui-flows.md](briefing/ui-flows.md). Arquitetura: [briefing/architecture.md](briefing/architecture.md). Este mapa só aponta onde o código está.
 
@@ -38,7 +38,7 @@ docs/                         briefing/, setup-geo.md, screenshots/
 pyproject.toml                config do pytest (testpaths backend/tests) e do ruff
 ```
 
-Não há `start.sh` nem Makefile: sobe-se à mão (ver seção 6 e README, "Commands").
+`start.sh` (raiz) sobe backend :8184 e frontend :5184 em primeiro plano e derruba a árvore no SIGTERM: é o launcher do Portal. `POV_BACKEND_PORT`/`POV_FRONTEND_PORT` trocam as portas (instância de teste do Portal). Sem Makefile; passos à mão no README, "Commands".
 
 ## 2. "Apertei o botão X, o que roda?"
 
@@ -129,4 +129,5 @@ Armadilha registrada no código: `transacoes` tem três índices 2dsphere em `lo
 - `backend/tests_live/test_live_geo.py` (6 testes, só com `GEO_LIVE=1` e `GEO_DB=*_test`): IXSCAN e chaves do composto ≪ puro, `$geoNear` = círculo `$centerSphere`, 40/40 plantados a 900 km/h, recorte de 74 pares, raio e facetas do `$search`, rotas A vs A+B.
 - `scripts/bench_geo.py`: latência (parede p50/p95 e servidor via explain); números no README, "Measured latency".
 - `frontend/tests/geo-map.test.mjs`: matemática de projeção/mapa.
+- `backend/tests/test_start_sh.py` (4 testes): contrato do `start.sh` com o Portal (bash válido, portas padrão 8184/5184, limpeza armada antes dos filhos, `wait` em primeiro plano, preview na porta do launcher).
 - Comandos (README, "Commands"), na raiz: `pytest` (usa `pyproject.toml`, `testpaths = backend/tests`); `ruff check backend`; `cd frontend && node --test tests/*.test.mjs`. Antes da demo: `curl http://localhost:8184/preflight`.

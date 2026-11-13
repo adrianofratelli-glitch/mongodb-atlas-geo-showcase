@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `start.sh`: launcher único (backend 8184 + frontend 5184, primeiro plano, limpeza da árvore no SIGTERM, portas sobrescrevíveis por `POV_BACKEND_PORT`/`POV_FRONTEND_PORT`); a PoV entra no catálogo do PoV Portfolio como `geo`. Teste do contrato em `backend/tests/test_start_sh.py`.
 - `$geoNear` roda na própria `transacoes` com `key: "local"` (medido no 9.0.7: mesmo resultado da cópia); `transacoes_geonear` aposentada, card degrada sozinho se o servidor recusar (ADR 0001).
 - Painel 03 na tela: explain medido de dois índices (64 vs 128.153 chaves) e `$search` com texto, `near`, raio e facetas (ADR 0002).
 - Investigação confere a regra contra o gabarito do gerador (40/40 plantados a 900 km/h), sem chamar isso de precisão/recall.
